@@ -6,6 +6,9 @@
 			"version": "latest",
 			"enableNonRootDocker": "true",
 			"moby": "false"
+		},
+		"ghcr.io/devcontainers/features/go:1": {
+			"version": "1.20"
 		}
 	}
 }
