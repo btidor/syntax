@@ -26,10 +26,10 @@ import (
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
 	"github.com/moby/buildkit/client/llb"
-	"github.com/moby/buildkit/client/llb/imagemetaresolver"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/dockerui"
+	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/frontend/subrequests/lint"
 	"github.com/moby/buildkit/frontend/subrequests/outline"
 	"github.com/moby/buildkit/frontend/subrequests/targets"
@@ -73,7 +73,7 @@ type ConvertOpt struct {
 	MainContext    *llb.State
 	SourceMap      *llb.SourceMap
 	TargetPlatform *ocispecs.Platform
-	MetaResolver   llb.ImageMetaResolver
+	MetaResolver   client.Client
 	LLBCaps        *apicaps.CapSet
 	Warn           linter.LintWarnFunc
 	AllStages      bool
@@ -182,7 +182,12 @@ func ListTargets(ctx context.Context, dt []byte) (*targets.List, error) {
 func newRuleLinter(dt []byte, opt *ConvertOpt) (*linter.Linter, error) {
 	var lintConfig *linter.Config
 	if opt.Client != nil && opt.Client.LinterConfig != nil {
-		lintConfig = opt.Client.LinterConfig
+		lintConfig = &linter.Config{
+			Warn:          linter.LintWarnFunc(opt.Client.LinterConfig.Warn),
+			SkipRules:     opt.Client.LinterConfig.SkipRules,
+			SkipAll:       opt.Client.LinterConfig.SkipAll,
+			ReturnAsError: opt.Client.LinterConfig.ReturnAsError,
+		}
 	} else {
 		var err error
 		lintOptionStr, _, _, _ := parser.ParseDirective("check", dt)
@@ -279,9 +284,6 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 	}
 
 	metaResolver := opt.MetaResolver
-	if metaResolver == nil {
-		metaResolver = imagemetaresolver.Default()
-	}
 
 	allDispatchStates := newDispatchStates()
 
@@ -383,6 +385,8 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 				total++
 			case *instructions.WorkdirCommand:
 				total++
+			case *instructions.PackageCommand:
+				total += PackageStepCount
 			}
 		}
 		ds.cmdTotal = total
@@ -725,6 +729,10 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 			sourceMap:           opt.SourceMap,
 			lint:                lint,
 			dockerIgnoreMatcher: dockerIgnoreMatcher,
+			dockerClient:        opt.Client,
+			gatewayClient:       opt.MetaResolver,
+			context:             ctx,
+			rawBuildContext:     buildContext,
 		}
 
 		for _, cmd := range d.commands {
@@ -874,6 +882,10 @@ type dispatchOpt struct {
 	sourceMap           *llb.SourceMap
 	lint                *linter.Linter
 	dockerIgnoreMatcher *patternmatcher.PatternMatcher
+	dockerClient        *dockerui.Client
+	gatewayClient       client.Client
+	context             context.Context
+	rawBuildContext     *mutableOutput
 }
 
 func getEnv(state llb.State) shell.EnvGetter {
@@ -1030,6 +1042,8 @@ func dispatch(d *dispatchState, cmd command, opt dispatchOpt) error {
 				}
 			}
 		}
+	case *instructions.PackageCommand:
+		err = NewPackageInvocation(d, c, opt).Dispatch()
 	default:
 	}
 	return err
