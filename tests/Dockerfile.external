@@ -1,13 +1,11 @@
 # syntax = btidor-syntax-dev
 
 FROM ubuntu AS a
-COPY nodesource.gpg /usr/share/keyrings/
-COPY nodesource.list /etc/apt/sources.list.d/
+COPY nodesource.sources /etc/apt/sources.list.d/
 ADD --apt nodejs
 
 FROM debian AS b
-COPY nodesource.gpg /usr/share/keyrings/
-COPY nodesource.list /etc/apt/sources.list.d/
+COPY nodesource.sources /etc/apt/sources.list.d/
 ADD --apt nodejs
 
 FROM scratch
