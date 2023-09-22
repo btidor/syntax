@@ -1,6 +1,22 @@
-.PHONY: all upstream
+.PHONY: all check release upstream $(wildcard tests/Dockerfile*)
 
 all:
+	docker build . -t btidor-syntax-dev
+
+check: $(wildcard tests/Dockerfile*)
+
+tests/Dockerfile*:
+	docker build -f $@ tests/ --no-cache
+	docker build -f $@ tests/
+	docker build -f $@ tests/
+
+release:
+	@bash -c '[[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$$ ]] || \
+			(echo "usage: make release V=x.y.z"; exit 1)'
+	@bash -c 'read -p "Release v$V? " -n 1 -r && echo && \
+			([[ $${REPLY^^} == "Y" ]] || exit 2)'
+	git tag -s "v$V" -m "syntax@v$V"
+	git push origin "v$V"
 
 upstream:
 	@bash -c '[[ -n "${V}" ]] || \
