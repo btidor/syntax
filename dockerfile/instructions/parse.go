@@ -322,11 +322,7 @@ func stringValuesFromFlagIfPossible(f *Flag) []string {
 	return f.StringValues
 }
 
-func parseAdd(req parseRequest) (*AddCommand, error) {
-	if len(req.args) < 2 {
-		return nil, errNoDestinationArgument("ADD")
-	}
-
+func parseAdd(req parseRequest) (interface{}, error) {
 	var flExcludes *Flag
 
 	// silently ignore if not -labs
@@ -339,10 +335,21 @@ func parseAdd(req parseRequest) (*AddCommand, error) {
 	flLink := req.flags.AddBool("link", false)
 	flKeepGitDir := req.flags.AddBool("keep-git-dir", false)
 	flChecksum := req.flags.AddString("checksum", "")
+	flApt := req.flags.AddBool("apt", false)
 	if err := req.flags.Parse(); err != nil {
 		return nil, err
 	}
 
+	if flApt.Value == "true" {
+		return &PackageCommand{
+			withNameAndCode: newWithNameAndCode(req),
+			PackageNames:    req.args,
+		}, nil
+	}
+
+	if len(req.args) < 2 {
+		return nil, errNoDestinationArgument("ADD")
+	}
 	sourcesAndDest, err := parseSourcesAndDest(req, "ADD")
 	if err != nil {
 		return nil, err
