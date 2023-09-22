@@ -1,0 +1,20 @@
+# syntax = btidor-syntax-dev
+
+FROM ubuntu
+
+COPY nodesource.gpg /usr/share/keyrings/
+COPY nodesource.list /etc/apt/sources.list.d/
+ADD https://go.dev/dl/go1.20.src.tar.gz /opt
+
+ENV HELLO=world
+RUN echo "hello $HELLO" > /hello_world.txt
+
+EXPOSE 80/tcp 123/udp
+ENTRYPOINT ["nginx"]
+CMD ["--version"]
+
+VOLUME /data
+WORKDIR /data
+LABEL test=123
+
+ADD --apt nginx nodejs

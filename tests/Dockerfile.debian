@@ -1,0 +1,4 @@
+# syntax = btidor-syntax-dev
+
+FROM debian
+ADD --apt clang nginx sl
