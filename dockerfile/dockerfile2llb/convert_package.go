@@ -23,8 +23,7 @@ var aptions = strings.Join([]string{
 	"--option Acquire::GzipIndexes=false",
 	"--option Dir::Cache=/btidor.syntax/cache",
 	"--option Dir::Cache::archives=archives/",
-	"--option Dir::State=/btidor.syntax/state",
-	"--option Dir::State::lists=lists/",
+	"--option Dir::State::lists=/btidor.syntax/state/lists/",
 	"--yes", "--quiet",
 }, " ")
 
@@ -62,17 +61,17 @@ func NewPackageInvocation(d *dispatchState, c *instructions.PackageCommand,
 func (i *PackageInvocation) Dispatch() error {
 	// Run `apt-get update` with the cache volume mounted.
 	//
-	// Since the cache volume is not guaranteed to persist between stages and
-	// these files are required by `apt-get install`, copy them into the
-	// temporary image.
+	// `apt-get update` deletes unrecognized sources, so work with a local copy
+	// of the cache volume.
 	var tmp, err = i.Run(i.d.state, i.updateStage, false,
 		[]string{
-			"mkdir -p /btidor.syntax/state/lists/partial",
+			"mkdir -p /btidor.syntax/shared/lists/partial",
+			"cp -r /btidor.syntax/shared /btidor.syntax/state",
 			fmt.Sprintf("apt-get update %s", aptions),
-			"cp -r /btidor.syntax/state /btidor.syntax/backup",
+			"cp -r /btidor.syntax/state/* /btidor.syntax/shared/",
 		},
-		llb.AddMount("/btidor.syntax/state", i.d.state,
-			llb.AsPersistentCacheDir("btidor.syntax", llb.CacheMountShared)),
+		llb.AddMount("/btidor.syntax/shared", llb.Scratch(),
+			llb.AsPersistentCacheDir("btidor.syntax", llb.CacheMountLocked)),
 	)
 	if err != nil {
 		return err
@@ -81,7 +80,6 @@ func (i *PackageInvocation) Dispatch() error {
 	// Run `apt-get install --download-only` through the Docker HTTP cache and
 	// store results in the temporary image.
 	tmp, err = i.Run(tmp, i.downloadStage, false, []string{
-		"mv /btidor.syntax/backup /btidor.syntax/state",
 		fmt.Sprintf("apt-get install -qq --print-uris %s %s "+
 			"> /btidor.syntax/install", aptions, strings.Join(i.cmd.PackageNames, " ")),
 	})
