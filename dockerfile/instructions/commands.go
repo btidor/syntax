@@ -264,6 +264,14 @@ func (c *AddCommand) Expand(expander SingleWordExpander) error {
 	return c.SourcesAndDest.Expand(expander)
 }
 
+// PackageCommand installs the given packages using the system package manager.
+//
+// ADD --apt foo bar
+type PackageCommand struct {
+	withNameAndCode
+	PackageNames []string
+}
+
 // CopyCommand copies files from the provided sources to the target destination.
 //
 //	COPY foo /path
