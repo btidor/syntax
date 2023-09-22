@@ -22,9 +22,9 @@ import (
 	"github.com/distribution/reference"
 	"github.com/docker/go-connections/nat"
 	"github.com/moby/buildkit/client/llb"
-	"github.com/moby/buildkit/client/llb/imagemetaresolver"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	"github.com/moby/buildkit/frontend/dockerui"
+	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/frontend/subrequests/outline"
 	"github.com/moby/buildkit/frontend/subrequests/targets"
 	"github.com/moby/buildkit/identity"
@@ -60,7 +60,7 @@ type ConvertOpt struct {
 	MainContext    *llb.State
 	SourceMap      *llb.SourceMap
 	TargetPlatform *ocispecs.Platform
-	MetaResolver   llb.ImageMetaResolver
+	MetaResolver   client.Client
 	LLBCaps        *apicaps.CapSet
 	Warn           func(short, url string, detail [][]byte, location *parser.Range)
 }
@@ -213,9 +213,6 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 	}
 
 	metaResolver := opt.MetaResolver
-	if metaResolver == nil {
-		metaResolver = imagemetaresolver.Default()
-	}
 
 	allDispatchStates := newDispatchStates()
 
@@ -310,6 +307,8 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 				total++
 			case *instructions.WorkdirCommand:
 				total++
+			case *instructions.PackageCommand:
+				total += PackageStepCount
 			}
 		}
 		ds.cmdTotal = total
@@ -565,6 +564,10 @@ func toDispatchState(ctx context.Context, dt []byte, opt ConvertOpt) (*dispatchS
 			cgroupParent:      opt.CgroupParent,
 			llbCaps:           opt.LLBCaps,
 			sourceMap:         opt.SourceMap,
+			dockerClient:      opt.Client,
+			gatewayClient:     opt.MetaResolver,
+			context:           ctx,
+			rawBuildContext:   buildContext,
 		}
 
 		if err = dispatchOnBuildTriggers(d, d.image.Config.OnBuild, opt); err != nil {
@@ -700,6 +703,10 @@ type dispatchOpt struct {
 	cgroupParent      string
 	llbCaps           *apicaps.CapSet
 	sourceMap         *llb.SourceMap
+	dockerClient      *dockerui.Client
+	gatewayClient     client.Client
+	context           context.Context
+	rawBuildContext   *mutableOutput
 }
 
 func dispatch(d *dispatchState, cmd command, opt dispatchOpt) error {
@@ -828,6 +835,8 @@ func dispatch(d *dispatchState, cmd command, opt dispatchOpt) error {
 				}
 			}
 		}
+	case *instructions.PackageCommand:
+		err = NewPackageInvocation(d, c, opt).Dispatch()
 	default:
 	}
 	return err
