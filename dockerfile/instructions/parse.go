@@ -321,11 +321,7 @@ func stringValuesFromFlagIfPossible(f *Flag) []string {
 	return f.StringValues
 }
 
-func parseAdd(req parseRequest) (*AddCommand, error) {
-	if len(req.args) < 2 {
-		return nil, errNoDestinationArgument("ADD")
-	}
-
+func parseAdd(req parseRequest) (interface{}, error) {
 	flChown := req.flags.AddString("chown", "")
 	flChmod := req.flags.AddString("chmod", "")
 	flLink := req.flags.AddBool("link", false)
@@ -333,10 +329,21 @@ func parseAdd(req parseRequest) (*AddCommand, error) {
 	flChecksum := req.flags.AddString("checksum", "")
 	flUnpack := req.flags.AddBool("unpack", false)
 	flExcludes := req.flags.AddStrings("exclude")
+	flApt := req.flags.AddBool("apt", false)
 	if err := req.flags.Parse(); err != nil {
 		return nil, err
 	}
 
+	if flApt.Value == "true" {
+		return &PackageCommand{
+			withNameAndCode: newWithNameAndCode(req),
+			PackageNames:    req.args,
+		}, nil
+	}
+
+	if len(req.args) < 2 {
+		return nil, errNoDestinationArgument("ADD")
+	}
 	sourcesAndDest, err := parseSourcesAndDest(req, "ADD")
 	if err != nil {
 		return nil, err
