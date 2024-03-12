@@ -10,9 +10,11 @@ import (
 	"github.com/moby/buildkit/solver/errdefs"
 	"github.com/moby/buildkit/util/testutil/integration"
 	"github.com/stretchr/testify/require"
+	"github.com/tonistiigi/fsutil"
 )
 
 func testErrorsSourceMap(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 
 	tcases := []struct {
@@ -75,18 +77,17 @@ env bar=baz`,
 
 	for _, tc := range tcases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir, err := integration.Tmpdir(
+			dir := integration.Tmpdir(
 				t,
 				fstest.CreateFile("Dockerfile", []byte(tc.dockerfile), 0600),
 			)
-			require.NoError(t, err)
 
 			c, err := client.New(sb.Context(), sb.Address())
 			require.NoError(t, err)
 			defer c.Close()
 
 			_, err = f.Solve(sb.Context(), c, client.SolveOpt{
-				LocalDirs: map[string]string{
+				LocalMounts: map[string]fsutil.FS{
 					dockerui.DefaultLocalNameDockerfile: dir,
 					dockerui.DefaultLocalNameContext:    dir,
 				},
