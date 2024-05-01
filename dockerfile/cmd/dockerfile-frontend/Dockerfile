@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile-upstream:master
 
-ARG GO_VERSION=1.20
+ARG GO_VERSION=1.21
+ARG ALPINE_VERSION=3.19
+ARG XX_VERSION=1.4.0
 
 # xx is a helper for cross-compilation
-FROM --platform=$BUILDPLATFORM tonistiigi/xx:master@sha256:d4254d9739ce2de9fb88e09bdc716aa0c65f0446a2a2143399f991d71136a3d4 AS xx
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:${XX_VERSION} AS xx
 
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS base
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS base
 RUN apk add git bash
 COPY --from=xx / /
 WORKDIR /src
@@ -34,19 +36,5 @@ LABEL moby.buildkit.frontend.network.none="true"
 LABEL moby.buildkit.frontend.caps="moby.buildkit.frontend.inputs,moby.buildkit.frontend.subrequests,moby.buildkit.frontend.contexts"
 COPY --from=build /dockerfile-frontend /bin/dockerfile-frontend
 ENTRYPOINT ["/bin/dockerfile-frontend"]
-
-
-FROM base AS buildid-check
-RUN apt-get update && apt-get --no-install-recommends install -y jq
-COPY /frontend/dockerfile/cmd/dockerfile-frontend/hack/check-daily-outdated .
-COPY --from=r.j3ss.co/reg /usr/bin/reg /bin
-COPY --from=build /dockerfile-frontend .
-ARG CHANNEL
-ARG REPO
-ARG DATE
-RUN ./check-daily-outdated $CHANNEL $REPO $DATE /out
-
-FROM scratch AS buildid
-COPY --from=buildid-check /out/ /
 
 FROM release
