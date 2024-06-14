@@ -4,8 +4,8 @@ import (
 	"path"
 
 	"github.com/btidor/syntax/dockerfile/instructions"
-	"github.com/btidor/syntax/dockerfile/parser"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/pkg/errors"
 )
 

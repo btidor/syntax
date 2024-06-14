@@ -8,6 +8,6 @@ import (
 	"github.com/moby/buildkit/client/llb"
 )
 
-func dispatchRunSecurity(c *instructions.RunCommand) (llb.RunOption, error) {
+func dispatchRunSecurity(_ *instructions.RunCommand) (llb.RunOption, error) {
 	return nil, nil
 }

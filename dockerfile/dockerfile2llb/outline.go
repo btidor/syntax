@@ -4,7 +4,7 @@ import (
 	"sort"
 
 	"github.com/btidor/syntax/dockerfile/instructions"
-	"github.com/btidor/syntax/dockerfile/parser"
+	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/buildkit/frontend/subrequests/outline"
 	pb "github.com/moby/buildkit/solver/pb"
 )
