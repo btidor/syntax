@@ -26,7 +26,7 @@ upstream:
 		tar zxv --wildcards "buildkit-*/frontend/dockerfile" "buildkit-*/go.mod" --strip-components=1
 	mv frontend/dockerfile/ .
 	mv go.mod dockerfile/
-	rm -r frontend dockerfile/docs dockerfile/parser
+	rm -r frontend dockerfile/docs dockerfile/linter/docs dockerfile/parser
 	sed -i -e 's#github.com/moby/buildkit/frontend/dockerfile/cmd/dockerfile-frontend#github.com/btidor/syntax#g' \
 		dockerfile/cmd/dockerfile-frontend/version.go
 	sed -i -e 's#0.0.0+unknown#$V#g' dockerfile/cmd/dockerfile-frontend/version.go
