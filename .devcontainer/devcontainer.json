@@ -1,6 +1,6 @@
 {
 	"name": "Docker in Docker",
-	"image": "mcr.microsoft.com/devcontainers/base:jammy",
+	"image": "mcr.microsoft.com/devcontainers/base:noble",
 	"features": {
 		"ghcr.io/devcontainers/features/docker-in-docker:2": {
 			"version": "latest",
@@ -8,7 +8,8 @@
 			"moby": "false"
 		},
 		"ghcr.io/devcontainers/features/go:1": {
-			"version": "1.21"
+			"version": "1.22"
 		}
-	}
+	},
+	"remoteUser": "vscode"
 }
