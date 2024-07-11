@@ -2,7 +2,7 @@ package dockerfile2llb
 
 import (
 	"github.com/btidor/syntax/dockerfile/instructions"
-	"github.com/containerd/containerd/platforms"
+	"github.com/containerd/platforms"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
