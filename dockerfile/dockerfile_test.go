@@ -30,12 +30,12 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/btidor/syntax/dockerfile/builder"
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/content/local"
-	"github.com/containerd/containerd/content/proxy"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/snapshots"
+	ctd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/content/proxy"
+	"github.com/containerd/containerd/v2/core/snapshots"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/plugins/content/local"
 	"github.com/containerd/continuity/fs/fstest"
 	"github.com/containerd/platforms"
 	intoto "github.com/in-toto/in-toto-golang/in_toto"
@@ -212,6 +212,10 @@ var allTests = integration.TestFuncs(
 	testEmptyStages,
 	testLocalCustomSessionID,
 	testTargetStageNameArg,
+	testStepNames,
+	testPowershellInDefaultPathOnWindows,
+	testOCILayoutMultiname,
+	testPlatformWithOSVersion,
 )
 
 // Tests that depend on the `security.*` entitlements
@@ -1373,13 +1377,18 @@ RUN [ "$(stat -c "%U %G" /dest01)" == "user01 user" ]
 }
 
 func testCopyThroughSymlinkContext(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM scratch
 COPY link/foo .
-`)
+`,
+		`	
+FROM nanoserver AS build
+COPY link/foo .
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -1498,14 +1507,20 @@ COPY . /
 }
 
 func testIgnoreEntrypoint(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM busybox
 ENTRYPOINT ["/nosuchcmd"]
 RUN ["ls"]
-`)
+`,
+		`
+FROM nanoserver AS build
+ENTRYPOINT ["nosuchcmd.exe"]
+RUN dir
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -1526,10 +1541,10 @@ RUN ["ls"]
 }
 
 func testQuotedMetaArgs(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
 
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 ARG a1="box"
 ARG a2="$a1-foo"
 FROM busy$a1 AS build
@@ -1538,7 +1553,19 @@ ARG a3="bar-$a2"
 RUN echo -n $a3 > /out
 FROM scratch
 COPY --from=build /out .
-`)
+`,
+		`
+ARG a1="server"
+ARG a2="$a1-foo"
+FROM nano$a1 AS build
+USER ContainerAdministrator
+ARG a2
+ARG a3="bar-$a2"
+RUN echo %a3% > /out
+FROM nanoserver
+COPY --from=build /out .
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -1567,7 +1594,10 @@ COPY --from=build /out .
 
 	dt, err := os.ReadFile(filepath.Join(destDir, "out"))
 	require.NoError(t, err)
-	require.Equal(t, "bar-box-foo", string(dt))
+
+	testString := string([]byte(integration.UnixOrWindows("bar-box-foo", "bar-server-foo \r\n")))
+
+	require.Equal(t, testString, string(dt))
 }
 
 func testGlobalArgErrors(t *testing.T, sb integration.Sandbox) {
@@ -1786,7 +1816,7 @@ COPY Dockerfile .
 		entrypoint []string
 		env        []string
 	}{
-		{p: "windows/amd64", entrypoint: []string{"cmd", "/S", "/C", "foo bar"}, env: []string{"PATH=c:\\Windows\\System32;c:\\Windows"}},
+		{p: "windows/amd64", entrypoint: []string{"cmd", "/S", "/C", "foo bar"}, env: []string{"PATH=c:\\Windows\\System32;c:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0"}},
 		{p: "linux/amd64", entrypoint: []string{"/bin/sh", "-c", "foo bar"}, env: []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}},
 	} {
 		t.Run(exp.p, func(t *testing.T) {
@@ -1921,6 +1951,49 @@ COPY --from=base /out/ /
 	dt, err = os.ReadFile(filepath.Join(destDir, "second"))
 	require.NoError(t, err)
 	require.Equal(t, "value:final", string(dt))
+}
+
+func testPowershellInDefaultPathOnWindows(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "!windows")
+
+	f := getFrontend(t, sb)
+
+	// just testing that the powershell path is in PATH
+	// but not testing powershell itself since it will need
+	// servercore image that is too bulky for just one single test.
+	dockerfile := []byte(`
+FROM nanoserver
+USER ContainerAdministrator
+RUN echo %PATH% > env_path.txt
+`)
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+			},
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(filepath.Join(destDir, "env_path.txt"))
+	require.NoError(t, err)
+
+	envPath := string(dt)
+	require.Contains(t, envPath, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0")
 }
 
 func testExportMultiPlatform(t *testing.T, sb integration.Sandbox) {
@@ -6702,7 +6775,7 @@ COPY Dockerfile Dockerfile
 		})
 		require.Error(t, err)
 		var reqErr *errdefs.UnsupportedSubrequestError
-		require.True(t, errors.As(err, &reqErr))
+		require.ErrorAs(t, err, &reqErr)
 		require.Equal(t, "frontend.subrequests.notexist", reqErr.GetName())
 
 		_, err = c.Solve(ctx, gateway.SolveRequest{
@@ -6713,7 +6786,7 @@ COPY Dockerfile Dockerfile
 		})
 		require.Error(t, err)
 		var capErr *errdefs.UnsupportedFrontendCapError
-		require.True(t, errors.As(err, &capErr))
+		require.ErrorAs(t, err, &capErr)
 		require.Equal(t, "moby.buildkit.frontend.notexistcap", capErr.GetName())
 
 		called = true
@@ -6732,14 +6805,19 @@ COPY Dockerfile Dockerfile
 
 // moby/buildkit#1301
 func testDockerfileCheckHostname(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
-	dockerfile := []byte(`
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM busybox
 RUN cat /etc/hosts | grep foo
 RUN echo $HOSTNAME | grep foo
 RUN echo $(hostname) | grep foo
-`)
+`,
+		`	
+FROM nanoserver
+RUN  reg query "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v Hostname | findstr "foo"
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -6790,11 +6868,8 @@ RUN echo $(hostname) | grep foo
 }
 
 func testEmptyStages(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	f := getFrontend(t, sb)
-	dockerfile := []byte(`
-ARG foo=bar
-`)
+	dockerfile := []byte(`ARG foo=bar`)
 
 	dir := integration.Tmpdir(
 		t,
@@ -6978,6 +7053,74 @@ COPY --from=base /out /
 	require.Contains(t, strings.TrimSpace(string(dt)), `Resource temporarily unavailable`)
 }
 
+func testStepNames(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	dockerfile := []byte(`
+FROM busybox AS base
+WORKDIR /out
+RUN echo "base" > base
+FROM scratch
+COPY --from=base --chmod=0644 /out /out
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	f := getFrontend(t, sb)
+
+	ch := make(chan *client.SolveStatus)
+
+	eg, ctx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		_, err = f.Solve(ctx, c, client.SolveOpt{
+			LocalMounts: map[string]fsutil.FS{
+				dockerui.DefaultLocalNameDockerfile: dir,
+				dockerui.DefaultLocalNameContext:    dir,
+			},
+		}, ch)
+		return err
+	})
+
+	eg.Go(func() error {
+		hasCopy := false
+		hasRun := false
+		visited := make(map[string]struct{})
+		for status := range ch {
+			for _, vtx := range status.Vertexes {
+				if _, ok := visited[vtx.Name]; ok {
+					continue
+				}
+				visited[vtx.Name] = struct{}{}
+				t.Logf("step: %q", vtx.Name)
+				if vtx.Name == `[base 3/3] RUN echo "base" > base` {
+					hasRun = true
+				} else if vtx.Name == `[stage-1 1/1] COPY --from=base --chmod=0644 /out /out` {
+					hasCopy = true
+				}
+			}
+		}
+		if !hasCopy {
+			return errors.New("missing copy step")
+		}
+		if !hasRun {
+			return errors.New("missing run step")
+		}
+		return nil
+	})
+
+	err = eg.Wait()
+	require.NoError(t, err)
+}
+
 func testNamedImageContext(t *testing.T, sb integration.Sandbox) {
 	integration.SkipOnPlatform(t, "windows")
 	ctx := sb.Context()
@@ -7151,7 +7294,6 @@ RUN [ ! -f /out ]
 }
 
 func testNamedImageContextPlatform(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush)
 	ctx := sb.Context()
 
@@ -7166,7 +7308,13 @@ func testNamedImageContextPlatform(t *testing.T, sb integration.Sandbox) {
 	require.NoError(t, err)
 
 	// Build a base image and force buildkit to generate a manifest list.
-	dockerfile := []byte(`FROM --platform=$BUILDPLATFORM alpine:latest`)
+	baseImage := integration.UnixOrWindows(
+		"alpine",
+		"nanoserver",
+	)
+
+	dockerfile := []byte(fmt.Sprintf(`FROM --platform=$BUILDPLATFORM %s:latest`, baseImage))
+
 	target := registry + "/buildkit/testnamedimagecontextplatform:latest"
 
 	dir := integration.Tmpdir(
@@ -7196,10 +7344,10 @@ func testNamedImageContextPlatform(t *testing.T, sb integration.Sandbox) {
 	}, nil)
 	require.NoError(t, err)
 
-	dockerfile = []byte(`
-FROM --platform=$BUILDPLATFORM busybox AS target
-RUN echo hello
-`)
+	dockerfile = []byte(fmt.Sprintf(`
+		FROM --platform=$BUILDPLATFORM %s AS target
+		RUN echo hello
+		`, baseImage))
 
 	dir = integration.Tmpdir(
 		t,
@@ -7310,19 +7458,20 @@ RUN echo foo >> /test
 }
 
 func testNamedImageContextScratch(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	ctx := sb.Context()
 
 	c, err := client.New(ctx, sb.Address())
 	require.NoError(t, err)
 	defer c.Close()
 
-	dockerfile := []byte(`
-FROM busybox
+	dockerfile := []byte(fmt.Sprintf(
+		`	
+FROM %s AS build
 COPY <<EOF /out
 hello world!
 EOF
-`)
+`,
+		integration.UnixOrWindows("busybox", "nanoserver")))
 
 	dir := integration.Tmpdir(
 		t,
@@ -7351,9 +7500,18 @@ EOF
 	require.NoError(t, err)
 
 	items, err := os.ReadDir(destDir)
+
+	fileNames := []string{}
+
+	for _, item := range items {
+		if item.Name() == "out" {
+			fileNames = append(fileNames, item.Name())
+		}
+	}
+
 	require.NoError(t, err)
-	require.Equal(t, 1, len(items))
-	require.Equal(t, "out", items[0].Name())
+	require.Equal(t, 1, len(fileNames))
+	require.Equal(t, "out", fileNames[0])
 
 	dt, err := os.ReadFile(filepath.Join(destDir, "out"))
 	require.NoError(t, err)
@@ -8534,6 +8692,103 @@ ARG BUILDKIT_SBOM_SCAN_STAGE=true
 	require.Equal(t, 1, len(att.LayersRaw))
 }
 
+// moby/buildkit#5572
+func testOCILayoutMultiname(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+
+	workers.CheckFeatureCompat(t, sb, workers.FeatureOCIExporter)
+
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+FROM scratch
+COPY <<EOF /foo
+hello
+EOF
+`)
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	dest := t.TempDir()
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterOCI,
+				OutputDir: dest,
+				Attrs: map[string]string{
+					"tar":  "false",
+					"name": "org/repo:tag1,org/repo:tag2",
+				},
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	var idx ocispecs.Index
+	dt, err := os.ReadFile(filepath.Join(dest, "index.json"))
+	require.NoError(t, err)
+
+	err = json.Unmarshal(dt, &idx)
+	require.NoError(t, err)
+
+	validateIdx := func(idx ocispecs.Index) {
+		require.Equal(t, 2, len(idx.Manifests))
+
+		require.Equal(t, idx.Manifests[0].Digest, idx.Manifests[1].Digest)
+		require.Equal(t, idx.Manifests[0].Platform, idx.Manifests[1].Platform)
+		require.Equal(t, idx.Manifests[0].MediaType, idx.Manifests[1].MediaType)
+		require.Equal(t, idx.Manifests[0].Size, idx.Manifests[1].Size)
+
+		require.Equal(t, "docker.io/org/repo:tag1", idx.Manifests[0].Annotations["io.containerd.image.name"])
+		require.Equal(t, "docker.io/org/repo:tag2", idx.Manifests[1].Annotations["io.containerd.image.name"])
+
+		require.Equal(t, "tag1", idx.Manifests[0].Annotations["org.opencontainers.image.ref.name"])
+		require.Equal(t, "tag2", idx.Manifests[1].Annotations["org.opencontainers.image.ref.name"])
+	}
+	validateIdx(idx)
+
+	// test that tar variant matches
+	buf := &bytes.Buffer{}
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:   client.ExporterOCI,
+				Output: fixedWriteCloser(&nopWriteCloser{buf}),
+				Attrs: map[string]string{
+					"name": "org/repo:tag1,org/repo:tag2",
+				},
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	m, err := testutil.ReadTarToMap(buf.Bytes(), false)
+	require.NoError(t, err)
+
+	var idx2 ocispecs.Index
+	err = json.Unmarshal(m["index.json"].Data, &idx2)
+	require.NoError(t, err)
+
+	validateIdx(idx2)
+}
+
 func testReproSourceDateEpoch(t *testing.T, sb integration.Sandbox) {
 	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureOCIExporter, workers.FeatureSourceDateEpoch)
@@ -9171,6 +9426,168 @@ COPY Dockerfile /foo
 	}
 }
 
+func testPlatformWithOSVersion(t *testing.T, sb integration.Sandbox) {
+	// This test cannot be run on Windows currently due to `FROM scratch` and
+	// layer formatting not being supported on Windows.
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush)
+
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	f := getFrontend(t, sb)
+
+	// NOTE: currently "OS" *must* be set to "windows" for this to work.
+	// The platform matchers only do OSVersion comparisons when the OS is set to "windows".
+	p1 := ocispecs.Platform{
+		OS:           "windows",
+		OSVersion:    "1.2.3",
+		Architecture: "bar",
+	}
+	p2 := ocispecs.Platform{
+		OS:           "windows",
+		OSVersion:    "1.1.0",
+		Architecture: "bar",
+	}
+
+	p1Str := platforms.FormatAll(p1)
+	p2Str := platforms.FormatAll(p2)
+
+	registry, err := sb.NewRegistry()
+	if errors.Is(err, integration.ErrRequirements) {
+		t.Skip(err.Error())
+	}
+	require.NoError(t, err)
+	target := registry + "/buildkit/testplatformwithosversion:latest"
+
+	dockerfile := []byte(`
+FROM ` + target + ` AS reg
+
+FROM scratch AS base
+ARG TARGETOSVERSION
+COPY <<EOF /osversion
+${TARGETOSVERSION}
+EOF
+ARG TARGETPLATFORM
+COPY <<EOF /targetplatform
+${TARGETPLATFORM}
+EOF
+`)
+
+	destDir := t.TempDir()
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	// build the base target as a multi-platform image and push to the registry
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"platform": p1Str + "," + p2Str,
+			"target":   "base",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+			},
+			{
+				Type: client.ExporterImage,
+				Attrs: map[string]string{
+					"name": target,
+					"push": "true",
+				},
+			},
+		},
+
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+
+	require.NoError(t, err)
+
+	desc, provider, err := contentutil.ProviderFromRef(target)
+	require.NoError(t, err)
+
+	info, err := testutil.ReadImages(ctx, provider, desc)
+	require.NoError(t, err)
+	require.Len(t, info.Images, 2)
+	require.Equal(t, info.Images[0].Img.Platform.OSVersion, p1.OSVersion)
+	require.Equal(t, info.Images[1].Img.Platform.OSVersion, p2.OSVersion)
+
+	dt, err := os.ReadFile(filepath.Join(destDir, strings.Replace(p1Str, "/", "_", 1), "osversion"))
+	require.NoError(t, err)
+	require.Equal(t, p1.OSVersion+"\n", string(dt))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, strings.Replace(p1Str, "/", "_", 1), "targetplatform"))
+	require.NoError(t, err)
+	require.Equal(t, p1Str+"\n", string(dt))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, strings.Replace(p2Str, "/", "_", 1), "osversion"))
+	require.NoError(t, err)
+	require.Equal(t, p2.OSVersion+"\n", string(dt))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, strings.Replace(p2Str, "/", "_", 1), "targetplatform"))
+	require.NoError(t, err)
+	require.Equal(t, p2Str+"\n", string(dt))
+
+	// Now build the "reg" target, which should pull the base image from the registry
+	// This should select the image with the requested os version.
+	destDir = t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"platform": p1Str,
+			"target":   "reg",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+			},
+		},
+
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "osversion"))
+	require.NoError(t, err)
+	require.Equal(t, p1.OSVersion+"\n", string(dt))
+
+	// And again with the other os version
+	destDir = t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"platform": p2Str,
+			"target":   "reg",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+			},
+		},
+
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "osversion"))
+	require.NoError(t, err)
+	require.Equal(t, p2.OSVersion+"\n", string(dt))
+}
+
 func runShell(dir string, cmds ...string) error {
 	for _, args := range cmds {
 		var cmd *exec.Cmd
@@ -9304,8 +9721,8 @@ loop0:
 	}
 }
 
-func newContainerd(cdAddress string) (*containerd.Client, error) {
-	return containerd.New(cdAddress, containerd.WithTimeout(60*time.Second))
+func newContainerd(cdAddress string) (*ctd.Client, error) {
+	return ctd.New(cdAddress, ctd.WithTimeout(60*time.Second))
 }
 
 func dfCmdArgs(ctx, dockerfile, args string) (string, string) {
