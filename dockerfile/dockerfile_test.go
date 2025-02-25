@@ -205,6 +205,7 @@ var allTests = integration.TestFuncs(
 	testFrontendDeduplicateSources,
 	testDuplicateLayersProvenance,
 	testSourcePolicyWithNamedContext,
+	testEagerNamedContextLookup,
 	testEmptyStringArgInEnv,
 	testInvalidJSONCommands,
 	testHistoryError,
@@ -216,6 +217,7 @@ var allTests = integration.TestFuncs(
 	testPowershellInDefaultPathOnWindows,
 	testOCILayoutMultiname,
 	testPlatformWithOSVersion,
+	testMaintainBaseOSVersion,
 )
 
 // Tests that depend on the `security.*` entitlements
@@ -9167,6 +9169,51 @@ func testSourcePolicyWithNamedContext(t *testing.T, sb integration.Sandbox) {
 	require.Equal(t, "foo", string(dt))
 }
 
+// testEagerNamedContextLookup tests that named context are not loaded if
+// they are not used by current build.
+func testEagerNamedContextLookup(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+
+	f := getFrontend(t, sb)
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	dockerfile := []byte(`
+FROM broken AS notused
+
+FROM alpine AS base
+RUN echo "base" > /foo
+
+FROM busybox AS otherstage
+
+FROM scratch
+COPY --from=base /foo /foo
+	`)
+
+	dir := integration.Tmpdir(t, fstest.CreateFile("Dockerfile", dockerfile, 0600))
+
+	out := t.TempDir()
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		Exports: []client.ExportEntry{
+			{Type: client.ExporterLocal, OutputDir: out},
+		},
+		FrontendAttrs: map[string]string{
+			"context:notused": "docker-image://docker.io/library/nosuchimage:latest",
+			"context:busybox": "docker-image://docker.io/library/dontexist:latest",
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(filepath.Join(out, "foo"))
+	require.NoError(t, err)
+	require.Equal(t, "base\n", string(dt))
+}
+
 func testBaseImagePlatformMismatch(t *testing.T, sb integration.Sandbox) {
 	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush)
@@ -9586,6 +9633,119 @@ EOF
 	dt, err = os.ReadFile(filepath.Join(destDir, "osversion"))
 	require.NoError(t, err)
 	require.Equal(t, p2.OSVersion+"\n", string(dt))
+}
+
+func testMaintainBaseOSVersion(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush)
+
+	ctx := sb.Context()
+
+	c, err := client.New(ctx, sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	f := getFrontend(t, sb)
+
+	p1 := ocispecs.Platform{
+		OS:           "windows",
+		OSVersion:    "10.20.30",
+		Architecture: "amd64",
+	}
+	p1Str := platforms.FormatAll(p1)
+
+	registry, err := sb.NewRegistry()
+	if errors.Is(err, integration.ErrRequirements) {
+		t.Skip(err.Error())
+	}
+	require.NoError(t, err)
+	target := registry + "/buildkit/testplatformwithosversion-1:latest"
+
+	dockerfile := []byte(`
+FROM scratch
+ARG TARGETPLATFORM
+COPY <<EOF /platform
+${TARGETPLATFORM}
+EOF
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"platform": p1Str,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type: client.ExporterImage,
+				Attrs: map[string]string{
+					"name": target,
+					"push": "true",
+				},
+			},
+		},
+
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+
+	require.NoError(t, err)
+
+	desc, provider, err := contentutil.ProviderFromRef(target)
+	require.NoError(t, err)
+
+	info, err := testutil.ReadImages(ctx, provider, desc)
+	require.NoError(t, err)
+	require.Len(t, info.Images, 1)
+	require.Equal(t, info.Images[0].Img.Platform.OSVersion, p1.OSVersion)
+
+	dockerfile = []byte(fmt.Sprintf(`
+FROM %s
+COPY <<EOF /other
+hello
+EOF
+`, target))
+
+	dir = integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	target2 := registry + "/buildkit/testplatformwithosversion-2:latest"
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"platform": p1.OS + "/" + p1.Architecture,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type: client.ExporterImage,
+				Attrs: map[string]string{
+					"name": target2,
+					"push": "true",
+				},
+			},
+		},
+
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	desc, provider, err = contentutil.ProviderFromRef(target2)
+	require.NoError(t, err)
+
+	info, err = testutil.ReadImages(ctx, provider, desc)
+	require.NoError(t, err)
+	require.Len(t, info.Images, 1)
+	require.Equal(t, info.Images[0].Img.Platform.OSVersion, p1.OSVersion)
 }
 
 func runShell(dir string, cmds ...string) error {
