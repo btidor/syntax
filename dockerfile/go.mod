@@ -3,7 +3,7 @@ module github.com/btidor/syntax/dockerfile
 go 1.22.0
 
 require (
-	github.com/containerd/containerd/v2 v2.0.2
+	github.com/containerd/containerd/v2 v2.0.3
 	github.com/containerd/continuity v0.4.5
 	github.com/containerd/platforms v1.0.0-rc.1
 	github.com/distribution/reference v0.6.0
@@ -11,7 +11,7 @@ require (
 	github.com/docker/go-units v0.5.0
 	github.com/in-toto/in-toto-golang v0.5.0
 	github.com/mitchellh/hashstructure/v2 v2.0.2
-	github.com/moby/buildkit v0.20.0
+	github.com/moby/buildkit v0.20.1
 	github.com/moby/docker-image-spec v1.3.1
 	github.com/moby/patternmatcher v0.6.0
 	github.com/moby/sys/signal v0.7.1
@@ -104,7 +104,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gotest.tools/v3 v3.5.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
-	tags.cncf.io/container-device-interface v0.8.0 // indirect
+	tags.cncf.io/container-device-interface v0.8.1 // indirect
 	tags.cncf.io/container-device-interface/specs-go v0.8.0 // indirect
 )
 
