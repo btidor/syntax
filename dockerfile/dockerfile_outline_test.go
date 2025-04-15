@@ -23,17 +23,19 @@ var outlineTests = integration.TestFuncs(
 	testOutlineArgs,
 	testOutlineSecrets,
 	testOutlineDescribeDefinition,
+	testOutlineRecursiveArgs,
 )
 
 func testOutlineArgs(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureFrontendOutline)
 	f := getFrontend(t, sb)
 	if _, ok := f.(*clientFrontend); !ok {
 		t.Skip("only test with client frontend")
 	}
 
-	dockerfile := []byte(`ARG inherited=box
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
+ARG inherited=box
 ARG inherited2=box2
 ARG unused=abc${inherited2}
 # sfx is a suffix
@@ -58,7 +60,35 @@ FROM third AS target
 COPY --from=first /etc/passwd /
 
 FROM second
-`)
+`,
+		`
+ARG inherited=server
+ARG inherited2=server2
+ARG unused=abc${inherited2}
+# sfx is a suffix
+ARG sfx="ano${inherited}"
+
+FROM n${sfx} AS first
+# this is not assigned to anything
+ARG FOO=123
+# BAR is a number
+ARG BAR=456
+RUN exit 0
+
+FROM nanoserver${unused} AS second
+ARG BAZ
+RUN exit 0
+
+FROM nanoserver AS third
+ARG ABC=a
+
+# target defines build target
+FROM third AS target
+COPY --from=first /License.txt /license
+
+FROM second
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -99,22 +129,22 @@ FROM second
 
 		arg := outline.Args[0]
 		require.Equal(t, "inherited", arg.Name)
-		require.Equal(t, "box", arg.Value)
+		require.Equal(t, integration.UnixOrWindows("box", "server"), arg.Value)
 		require.Equal(t, "", arg.Description)
 		require.Equal(t, int32(0), arg.Location.SourceIndex)
-		require.Equal(t, int32(1), arg.Location.Ranges[0].Start.Line)
+		require.Equal(t, int32(2), arg.Location.Ranges[0].Start.Line)
 
 		arg = outline.Args[1]
 		require.Equal(t, "sfx", arg.Name)
-		require.Equal(t, "usybox", arg.Value)
+		require.Equal(t, integration.UnixOrWindows("usybox", "anoserver"), arg.Value)
 		require.Equal(t, "is a suffix", arg.Description)
-		require.Equal(t, int32(5), arg.Location.Ranges[0].Start.Line)
+		require.Equal(t, int32(6), arg.Location.Ranges[0].Start.Line)
 
 		arg = outline.Args[2]
 		require.Equal(t, "FOO", arg.Name)
 		require.Equal(t, "123", arg.Value)
 		require.Equal(t, "", arg.Description)
-		require.Equal(t, int32(9), arg.Location.Ranges[0].Start.Line)
+		require.Equal(t, int32(10), arg.Location.Ranges[0].Start.Line)
 
 		arg = outline.Args[3]
 		require.Equal(t, "BAR", arg.Name)
@@ -224,6 +254,86 @@ FROM second
 		require.Equal(t, true, ssh.Required)
 		require.Equal(t, int32(0), ssh.Location.SourceIndex)
 		require.Equal(t, int32(14), ssh.Location.Ranges[0].Start.Line)
+
+		called = true
+		return nil, nil
+	}
+
+	_, err = c.Build(sb.Context(), client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+		},
+	}, "", frontend, nil)
+	require.NoError(t, err)
+
+	require.True(t, called)
+}
+
+func testOutlineRecursiveArgs(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureFrontendOutline)
+	f := getFrontend(t, sb)
+	if _, ok := f.(*clientFrontend); !ok {
+		t.Skip("only test with client frontend")
+	}
+
+	dockerfile := []byte(`
+ARG FOO=123
+ARG ABC=abc
+ARG DEF=def
+ARG FOO=${FOO}${ABC}
+ARG BAR=${FOO}456
+ARG FOO=${FOO}456${BAR}
+FROM scratch
+ARG FOO
+ARG INFOO=123
+ARG INBAR=${INFOO}456
+ARG INFOO=${INFOO}456${INBAR}
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", []byte(dockerfile), 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir, err := os.MkdirTemp("", "buildkit")
+	require.NoError(t, err)
+	defer os.RemoveAll(destDir)
+
+	called := false
+	frontend := func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
+		res, err := c.Solve(ctx, gateway.SolveRequest{
+			FrontendOpt: map[string]string{
+				"frontend.caps": "moby.buildkit.frontend.subrequests",
+				"requestid":     "frontend.outline",
+			},
+			Frontend: "dockerfile.v0",
+		})
+		require.NoError(t, err)
+
+		outline, err := unmarshalOutline(res)
+		require.NoError(t, err)
+
+		require.Len(t, outline.Args, 5)
+
+		require.Equal(t, "ABC", outline.Args[0].Name)
+		require.Equal(t, "abc", outline.Args[0].Value)
+
+		require.Equal(t, "BAR", outline.Args[1].Name)
+		require.Equal(t, "123abc456", outline.Args[1].Value)
+
+		require.Equal(t, "FOO", outline.Args[2].Name)
+		require.Equal(t, "123abc456123abc456", outline.Args[2].Value)
+
+		require.Equal(t, "INBAR", outline.Args[3].Name)
+		require.Equal(t, "123456", outline.Args[3].Value)
+
+		require.Equal(t, "INFOO", outline.Args[4].Name)
+		require.Equal(t, "123456123456", outline.Args[4].Value)
 
 		called = true
 		return nil, nil

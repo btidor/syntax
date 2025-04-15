@@ -5,7 +5,7 @@ var (
 	Package = "github.com/btidor/syntax"
 
 	// Version holds the complete version number. Filled in at linking time.
-	Version = "1.14.1"
+	Version = "1.15.0"
 
 	// Revision is filled with the VCS (e.g. git) revision being used to build
 	// the program at linking time.

@@ -397,9 +397,8 @@ copy Dockerfile .
 				Level:       1,
 			},
 		},
-		StreamBuildErr:    "failed to solve: lint violation found for rules: FromAsCasing",
-		UnmarshalBuildErr: "lint violation found for rules: FromAsCasing",
-		BuildErrLocation:  2,
+		BuildErr:         "lint violation found for rules: FromAsCasing",
+		BuildErrLocation: 2,
 	})
 
 	dockerfile = []byte(`#check=skip=all
@@ -418,9 +417,8 @@ copy Dockerfile .
 				Level:       1,
 			},
 		},
-		StreamBuildErr:    "failed to solve: lint violation found for rules: FromAsCasing",
-		UnmarshalBuildErr: "lint violation found for rules: FromAsCasing",
-		BuildErrLocation:  2,
+		BuildErr:         "lint violation found for rules: FromAsCasing",
+		BuildErrLocation: 2,
 		FrontendAttrs: map[string]string{
 			"build-arg:BUILDKIT_DOCKERFILE_CHECK": "skip=ConsistentInstructionCasing;error=true",
 		},
@@ -661,7 +659,7 @@ COPY Dockerfile /bar
 `)
 	checkLinterWarnings(t, sb, &lintTestParams{Dockerfile: dockerfile})
 
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 FROM %s
 RUN <<'EOT'
@@ -670,7 +668,7 @@ EOT
 `,
 		integration.UnixOrWindows("alpine", "nanoserver"),
 		integration.UnixOrWindows("env", "set"),
-	))
+	)
 	checkLinterWarnings(t, sb, &lintTestParams{Dockerfile: dockerfile})
 }
 
@@ -858,9 +856,8 @@ BADCMD
 				Line:        3,
 			},
 		},
-		StreamBuildErr:    "failed to solve: dockerfile parse error on line 4: unknown instruction: BADCMD",
-		UnmarshalBuildErr: "dockerfile parse error on line 4: unknown instruction: BADCMD",
-		BuildErrLocation:  4,
+		BuildErr:         "dockerfile parse error on line 4: unknown instruction: BADCMD",
+		BuildErrLocation: 4,
 	})
 }
 
@@ -922,27 +919,23 @@ COPY Dockerfile .
 				Line:        2,
 			},
 		},
-		StreamBuildErr:    "failed to solve: empty platform value from expression $BULIDPLATFORM (did you mean BUILDPLATFORM?)",
-		UnmarshalBuildErr: "empty platform value from expression $BULIDPLATFORM (did you mean BUILDPLATFORM?)",
-		BuildErrLocation:  2,
+		BuildErr:         "empty platform value from expression $BULIDPLATFORM (did you mean BUILDPLATFORM?)",
+		BuildErrLocation: 2,
 	})
 
 	osName := integration.UnixOrWindows("linux", "windows")
 	baseImg := integration.UnixOrWindows("busybox", "nanoserver")
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 ARG MY_OS=%s
 ARG MY_ARCH=amd64
 FROM --platform=%s/${MYARCH} %s
 COPY Dockerfile .
 	`,
-		osName, osName, baseImg))
+		osName, osName, baseImg)
 
 	osStr := integration.UnixOrWindows("linux", "windows")
-	streamBuildErr := fmt.Sprintf(
-		"failed to solve: failed to parse platform %s/${MYARCH}: \"\" is an invalid component of \"%s/\": platform specifier component must match \"^[A-Za-z0-9_.-]+$\": invalid argument (did you mean MY_ARCH?)",
-		osStr, osStr)
-	unmarshalBuildErr := fmt.Sprintf(
+	buildErr := fmt.Sprintf(
 		"failed to parse platform %s/${MYARCH}: \"\" is an invalid component of \"%s/\": platform specifier component must match \"^[A-Za-z0-9_.-]+$\": invalid argument (did you mean MY_ARCH?)",
 		osStr, osStr)
 	checkLinterWarnings(t, sb, &lintTestParams{
@@ -957,18 +950,17 @@ COPY Dockerfile .
 				Line:        4,
 			},
 		},
-		StreamBuildErr:    streamBuildErr,
-		UnmarshalBuildErr: unmarshalBuildErr,
-		BuildErrLocation:  4,
+		BuildErr:         buildErr,
+		BuildErrLocation: 4,
 	})
 
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 ARG tag=latest
 FROM %s:${tag}${version} AS b
 COPY Dockerfile .
 `,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{
 		Dockerfile: dockerfile,
 		Warnings: []expectedLintWarning{
@@ -1022,7 +1014,7 @@ COPY Dockerfile${foo} .
 	checkLinterWarnings(t, sb, &lintTestParams{Dockerfile: dockerfile})
 
 	baseImg := integration.UnixOrWindows("alpine", "nanoserver")
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 FROM %s AS base
 ARG foo=Dockerfile
@@ -1030,25 +1022,25 @@ ARG foo=Dockerfile
 FROM base
 COPY $foo .
 `,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{Dockerfile: dockerfile})
 
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 FROM %s
 RUN echo $PATH
 `,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{Dockerfile: dockerfile})
 
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 FROM %s
 COPY $foo .
 ARG foo=bar
 RUN echo $foo
 `,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{
 		Dockerfile: dockerfile,
 		Warnings: []expectedLintWarning{
@@ -1063,7 +1055,7 @@ RUN echo $foo
 		},
 	})
 
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 FROM %s
 ARG DIR_BINARIES=binaries/
@@ -1071,7 +1063,7 @@ ARG DIR_ASSETS=assets/
 ARG DIR_CONFIG=config/
 COPY $DIR_ASSET .
 	`,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{
 		Dockerfile: dockerfile,
 		Warnings: []expectedLintWarning{
@@ -1086,12 +1078,12 @@ COPY $DIR_ASSET .
 		},
 	})
 
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 FROM %s
 ENV PATH=$PAHT:/tmp/bin
 		`,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{
 		Dockerfile: dockerfile,
 		Warnings: []expectedLintWarning{
@@ -1281,12 +1273,12 @@ FROM --platform=${TARGETPLATFORM} scratch
 
 func testInvalidDefaultArgInFrom(t *testing.T, sb integration.Sandbox) {
 	baseImg := integration.UnixOrWindows("busybox", "nanoserver")
-	dockerfile := []byte(fmt.Sprintf(
+	dockerfile := fmt.Appendf(nil,
 		`
 ARG VERSION
 FROM %s:$VERSION
 `,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{
 		Dockerfile: dockerfile,
 		FrontendAttrs: map[string]string{
@@ -1358,12 +1350,12 @@ FROM nano${SFX}
 		},
 	})
 
-	dockerfile = []byte(fmt.Sprintf(
+	dockerfile = fmt.Appendf(nil,
 		`
 ARG VERSION="latest"
 FROM %s:${VERSION}
 `,
-		baseImg))
+		baseImg)
 	checkLinterWarnings(t, sb, &lintTestParams{
 		Dockerfile: dockerfile,
 		FrontendAttrs: map[string]string{
@@ -1470,12 +1462,12 @@ func checkUnmarshal(t *testing.T, sb integration.Sandbox, lintTest *lintTestPara
 		lintResults, err := unmarshalLintResults(res)
 		require.NoError(t, err)
 
-		if lintTest.UnmarshalBuildErr == "" && lintTest.UnmarshalBuildErrRegexp == nil {
+		if lintTest.BuildErr == "" && lintTest.UnmarshalBuildErrRegexp == nil {
 			require.Nil(t, lintResults.Error)
 		} else {
 			require.NotNil(t, lintResults.Error)
-			if lintTest.UnmarshalBuildErr != "" {
-				require.Equal(t, lintTest.UnmarshalBuildErr, lintResults.Error.Message)
+			if lintTest.BuildErr != "" {
+				require.Equal(t, lintTest.BuildErr, lintResults.Error.Message)
 			} else if !lintTest.UnmarshalBuildErrRegexp.MatchString(lintResults.Error.Message) {
 				t.Fatalf("error %q does not match %q", lintResults.Error.Message, lintTest.UnmarshalBuildErrRegexp.String())
 			}
@@ -1562,14 +1554,14 @@ func checkProgressStream(t *testing.T, sb integration.Sandbox, lintTest *lintTes
 			dockerui.DefaultLocalNameContext:    lintTest.TmpDir,
 		},
 	}, status)
-	if lintTest.StreamBuildErr == "" && lintTest.StreamBuildErrRegexp == nil {
+	if lintTest.BuildErr == "" && lintTest.StreamBuildErrRegexp == nil {
 		if err != nil {
 			t.Logf("expected no error, received: %v", err)
 		}
 		require.NoError(t, err)
 	} else {
-		if lintTest.StreamBuildErr != "" {
-			require.EqualError(t, err, lintTest.StreamBuildErr)
+		if lintTest.BuildErr != "" {
+			require.ErrorContains(t, err, lintTest.BuildErr)
 		} else if !lintTest.StreamBuildErrRegexp.MatchString(err.Error()) {
 			t.Fatalf("error %q does not match %q", err.Error(), lintTest.StreamBuildErrRegexp.String())
 		}
@@ -1695,9 +1687,8 @@ type lintTestParams struct {
 	DockerIgnore            []byte
 	Warnings                []expectedLintWarning
 	UnmarshalWarnings       []expectedLintWarning
-	StreamBuildErr          string
+	BuildErr                string
 	StreamBuildErrRegexp    *regexp.Regexp
-	UnmarshalBuildErr       string
 	UnmarshalBuildErrRegexp *regexp.Regexp
 	BuildErrLocation        int32
 	FrontendAttrs           map[string]string
