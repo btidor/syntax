@@ -11,5 +11,7 @@
 			"version": "1.24"
 		}
 	},
-	"remoteUser": "vscode"
+	"remoteUser": "vscode",
+	// https://github.com/devcontainers/features/issues/1235#issuecomment-2672736649
+	"postCreateCommand": "sudo update-alternatives --set iptables /usr/sbin/iptables-nft"
 }
