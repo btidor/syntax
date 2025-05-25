@@ -3,7 +3,7 @@ module github.com/btidor/syntax/dockerfile
 go 1.23.0
 
 require (
-	github.com/containerd/containerd/v2 v2.0.4
+	github.com/containerd/containerd/v2 v2.0.5
 	github.com/containerd/continuity v0.4.5
 	github.com/containerd/platforms v1.0.0-rc.1
 	github.com/distribution/reference v0.6.0
@@ -11,7 +11,7 @@ require (
 	github.com/docker/go-units v0.5.0
 	github.com/in-toto/in-toto-golang v0.5.0
 	github.com/mitchellh/hashstructure/v2 v2.0.2
-	github.com/moby/buildkit v0.21.1
+	github.com/moby/buildkit v0.22.0
 	github.com/moby/docker-image-spec v1.3.1
 	github.com/moby/patternmatcher v0.6.0
 	github.com/moby/sys/signal v0.7.1
@@ -20,7 +20,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.10.0
 	github.com/tonistiigi/dchapes-mode v0.0.0-20250318174251-73d941a28323
-	github.com/tonistiigi/fsutil v0.0.0-20250410151801-5b74a7ad7583
+	github.com/tonistiigi/fsutil v0.0.0-20250417144416-3f76f8130144
 	github.com/tonistiigi/go-csvvalue v0.0.0-20240710180619-ddb21b71c0b4
 	golang.org/x/sync v0.13.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20241021214115-324edc3d5d38
@@ -35,6 +35,7 @@ require (
 	github.com/Microsoft/hcsshim v0.12.9 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/armon/circbuf v0.0.0-20190214190532-5111143e8da2 // indirect
+	github.com/containerd/accelerated-container-image v1.2.3 // indirect
 	github.com/containerd/cgroups/v3 v3.0.5 // indirect
 	github.com/containerd/containerd/api v1.8.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
@@ -47,7 +48,7 @@ require (
 	github.com/containerd/ttrpc v1.2.7 // indirect
 	github.com/containerd/typeurl/v2 v2.2.3 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/docker/cli v28.0.4+incompatible // indirect
+	github.com/docker/cli v28.1.1+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
@@ -81,7 +82,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/syndtr/gocapability v0.0.0-20200815063812-42c35b437635 // indirect
 	github.com/tonistiigi/units v0.0.0-20180711220420-6950e57a87ea // indirect
-	github.com/vbatts/tar-split v0.11.6 // indirect
+	github.com/vbatts/tar-split v0.12.1 // indirect
 	go.etcd.io/bbolt v1.3.11 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.56.0 // indirect
