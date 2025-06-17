@@ -83,6 +83,7 @@ var allTests = integration.TestFuncs(
 	testDockerfileInvalidCommand,
 	testDockerfileADDFromURL,
 	testDockerfileAddArchive,
+	testDockerfileAddChownArchive,
 	testDockerfileScratchConfig,
 	testExportedHistory,
 	testExportedHistoryFlattenArgs,
@@ -200,6 +201,7 @@ var allTests = integration.TestFuncs(
 	testDockerIgnoreMissingProvenance,
 	testCommandSourceMapping,
 	testSBOMScannerArgs,
+	testMultiNilRefsOCIExporter,
 	testNilContextInSolveGateway,
 	testMultiNilRefsInSolveGateway,
 	testCopyUnicodePath,
@@ -3220,6 +3222,34 @@ ADD t.tar.gz /
 	require.NoError(t, err)
 	require.Equal(t, expectedContent, dt)
 
+	// add with unpack=false
+	dockerfile = fmt.Appendf(nil, `
+	FROM %s
+	ADD --unpack=false t.tar.gz /
+	`, baseImage)
+
+	dir = integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+		fstest.CreateFile("t.tar.gz", buf2.Bytes(), 0600),
+	)
+
+	args, trace = f.DFCmdArgs(dir.Name, dir.Name)
+	defer os.RemoveAll(trace)
+
+	destDir = t.TempDir()
+
+	cmd = sb.Cmd(args + fmt.Sprintf(" --output type=local,dest=%s", destDir))
+	require.NoError(t, cmd.Run())
+
+	_, err = os.Stat(filepath.Join(destDir, "foo"))
+	require.Error(t, err)
+	require.True(t, os.IsNotExist(err))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "t.tar.gz"))
+	require.NoError(t, err)
+	require.Equal(t, buf2.Bytes(), dt)
+
 	// COPY doesn't extract
 	dockerfile = fmt.Appendf(nil, `
 FROM %s
@@ -3277,6 +3307,29 @@ ADD %s /
 	require.NoError(t, err)
 	require.Equal(t, buf2.Bytes(), dt)
 
+	// ADD from URL with --unpack=true
+	dockerfile = fmt.Appendf(nil, `
+FROM %s
+ADD --unpack=true %s /dest/
+`, baseImage, server.URL+"/t.tar.gz")
+
+	dir = integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	args, trace = f.DFCmdArgs(dir.Name, dir.Name)
+	defer os.RemoveAll(trace)
+
+	destDir = t.TempDir()
+
+	cmd = sb.Cmd(args + fmt.Sprintf(" --output type=local,dest=%s", destDir))
+	require.NoError(t, cmd.Run())
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "dest/foo"))
+	require.NoError(t, err)
+	require.Equal(t, expectedContent, dt)
+
 	// https://github.com/moby/buildkit/issues/386
 	dockerfile = fmt.Appendf(nil, `
 FROM %s
@@ -3299,6 +3352,70 @@ ADD %s /newname.tar.gz
 	dt, err = os.ReadFile(filepath.Join(destDir, "newname.tar.gz"))
 	require.NoError(t, err)
 	require.Equal(t, buf2.Bytes(), dt)
+}
+
+func testDockerfileAddChownArchive(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	f := getFrontend(t, sb)
+
+	buf := bytes.NewBuffer(nil)
+	tw := tar.NewWriter(buf)
+	content := []byte("content0")
+	err := tw.WriteHeader(&tar.Header{
+		Name:     "foo",
+		Typeflag: tar.TypeReg,
+		Size:     int64(len(content)),
+		Mode:     0644,
+	})
+	require.NoError(t, err)
+	_, err = tw.Write(content)
+	require.NoError(t, err)
+	err = tw.Close()
+	require.NoError(t, err)
+
+	dockerfile := []byte(`
+FROM scratch
+ADD --chown=100:200 t.tar /out/
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+		fstest.CreateFile("t.tar", buf.Bytes(), 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	outBuf := &bytes.Buffer{}
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		Exports: []client.ExportEntry{
+			{
+				Type:   client.ExporterTar,
+				Output: fixedWriteCloser(&nopWriteCloser{outBuf}),
+			},
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	m, err := testutil.ReadTarToMap(outBuf.Bytes(), false)
+	require.NoError(t, err)
+
+	mi, ok := m["out/foo"]
+	require.True(t, ok)
+	require.Equal(t, "content0", string(mi.Data))
+	require.Equal(t, 100, mi.Header.Uid)
+	require.Equal(t, 200, mi.Header.Gid)
+
+	mi, ok = m["out/"]
+	require.True(t, ok)
+	require.Equal(t, 100, mi.Header.Uid)
+	require.Equal(t, 200, mi.Header.Gid)
 }
 
 func testDockerfileAddArchiveWildcard(t *testing.T, sb integration.Sandbox) {
@@ -9119,6 +9236,66 @@ COPY --link foo foo
 			}
 		})
 	}
+}
+
+func testMultiNilRefsOCIExporter(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureMultiPlatform, workers.FeatureOCIExporter)
+
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`FROM scratch`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+
+	out := filepath.Join(destDir, "out.tar")
+	outW, err := os.Create(out)
+	require.NoError(t, err)
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		FrontendAttrs: map[string]string{
+			"platform": "linux/arm64,linux/amd64",
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:   client.ExporterOCI,
+				Output: fixedWriteCloser(outW),
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(filepath.Join(destDir, "out.tar"))
+	require.NoError(t, err)
+
+	m, err := testutil.ReadTarToMap(dt, false)
+	require.NoError(t, err)
+
+	var idx ocispecs.Index
+	err = json.Unmarshal(m[ocispecs.ImageIndexFile].Data, &idx)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(idx.Manifests))
+	mlistHex := idx.Manifests[0].Digest.Hex()
+
+	idx = ocispecs.Index{}
+	err = json.Unmarshal(m[ocispecs.ImageBlobsDir+"/sha256/"+mlistHex].Data, &idx)
+	require.NoError(t, err)
+
+	require.Equal(t, 2, len(idx.Manifests))
 }
 
 func timeMustParse(t *testing.T, layout, value string) time.Time {
