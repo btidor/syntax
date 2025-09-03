@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile-upstream:master
 
 ARG GO_VERSION=1.24
-ARG ALPINE_VERSION=3.21
+ARG ALPINE_VERSION=3.22
 ARG XX_VERSION=1.6.1
 
 # xx is a helper for cross-compilation
@@ -33,7 +33,7 @@ RUN --mount=target=. --mount=type=cache,target=/root/.cache \
 
 FROM scratch AS release
 LABEL moby.buildkit.frontend.network.none="true"
-LABEL moby.buildkit.frontend.caps="moby.buildkit.frontend.inputs,moby.buildkit.frontend.subrequests,moby.buildkit.frontend.contexts"
+LABEL moby.buildkit.frontend.caps="moby.buildkit.frontend.inputs,moby.buildkit.frontend.subrequests,moby.buildkit.frontend.contexts,moby.buildkit.frontend.gitquerystring"
 COPY --from=build /dockerfile-frontend /bin/dockerfile-frontend
 ENTRYPOINT ["/bin/dockerfile-frontend"]
 
