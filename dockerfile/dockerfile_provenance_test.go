@@ -186,7 +186,7 @@ RUN echo ok> /foo
 					"numbers": []any{1.0, 2.0, 3.0},
 				}
 				if isDockerd {
-					expCustom = nil
+					expCustom = provenancetypes.ProvenanceCustomEnv{}
 				}
 
 				if slsaVersion == "v1" {
@@ -1349,6 +1349,7 @@ ENV FOO=bar
 
 // https://github.com/moby/buildkit/issues/3562
 func testDuplicatePlatformProvenance(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureProvenance)
 	ctx := sb.Context()
 
