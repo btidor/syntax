@@ -230,6 +230,16 @@ COPY ./Dockerfile .
 		Dockerfile:   dockerfile,
 		DockerIgnore: dockerignore,
 	})
+
+	// No warnings should occur if we copy the directory.
+	dockerfile = []byte(`
+FROM scratch
+COPY . .
+	`)
+	checkLinterWarnings(t, sb, &lintTestParams{
+		Dockerfile:   dockerfile,
+		DockerIgnore: dockerignore,
+	})
 }
 
 func testSecretsUsedInArgOrEnv(t *testing.T, sb integration.Sandbox) {
@@ -244,6 +254,9 @@ ENV apikey=bar sunflower=foo
 ENV git_key=
 ENV PUBLIC_KEY=
 ARG public_token
+ARG SECRET_PASSPHRASE_FILE
+ENV password_file=bar secret_File=baz
+ARG AUTH_MODULE_VERSION
 # check=skip=SecretsUsedInArgOrEnv // allow secret in environment
 ENV password=bar
 # check=skip=SecretsUsedInArgOrEnv // allow secret in arg
