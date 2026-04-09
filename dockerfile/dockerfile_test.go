@@ -54,6 +54,7 @@ import (
 	spb "github.com/moby/buildkit/sourcepolicy/pb"
 	"github.com/moby/buildkit/util/contentutil"
 	"github.com/moby/buildkit/util/grpcerrors"
+	"github.com/moby/buildkit/util/iohelper"
 	"github.com/moby/buildkit/util/stack"
 	"github.com/moby/buildkit/util/testutil"
 	"github.com/moby/buildkit/util/testutil/httpserver"
@@ -228,6 +229,10 @@ var heredocTests = []integration.Test{}
 var reproTests = integration.TestFuncs(
 	testReproSourceDateEpoch,
 	testWorkdirSourceDateEpochReproducible,
+	testSourceDateEpochDockerfileDefault,
+	testSourceDateEpochDockerfileDefaultOverride,
+	testSourceDateEpochDockerfileDefaultReset,
+	testSourceDateEpochDockerfileDefaultInvalid,
 )
 
 var (
@@ -805,7 +810,7 @@ COPY foo foo
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterTar,
-				Output: fixedWriteCloser(&nopWriteCloser{buf}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: buf}),
 			},
 		},
 		LocalMounts: map[string]fsutil.FS{
@@ -853,7 +858,7 @@ FROM stage-$TARGETOS
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterTar,
-				Output: fixedWriteCloser(&nopWriteCloser{buf}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: buf}),
 			},
 		},
 		LocalMounts: map[string]fsutil.FS{
@@ -876,7 +881,7 @@ FROM stage-$TARGETOS
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterTar,
-				Output: fixedWriteCloser(&nopWriteCloser{buf}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: buf}),
 			},
 		},
 		FrontendAttrs: map[string]string{
@@ -1023,6 +1028,23 @@ WORKDIR /mydir
 	require.NoError(t, err)
 
 	require.Equal(t, index1, index2)
+}
+
+func readOCIManifest(t *testing.T, dt []byte) ocispecs.Manifest {
+	t.Helper()
+
+	m, err := testutil.ReadTarToMap(dt, false)
+	require.NoError(t, err)
+
+	var idx ocispecs.Index
+	err = json.Unmarshal(m[ocispecs.ImageIndexFile].Data, &idx)
+	require.NoError(t, err)
+
+	var mfst ocispecs.Manifest
+	err = json.Unmarshal(m[ocispecs.ImageBlobsDir+"/sha256/"+idx.Manifests[0].Digest.Hex()].Data, &mfst)
+	require.NoError(t, err)
+
+	return mfst
 }
 
 func testCacheReleased(t *testing.T, sb integration.Sandbox) {
@@ -3430,7 +3452,7 @@ ADD --chown=100:200 t.tar /out/
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterTar,
-				Output: fixedWriteCloser(&nopWriteCloser{outBuf}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: outBuf}),
 			},
 		},
 		LocalMounts: map[string]fsutil.FS{
@@ -5561,7 +5583,7 @@ func testOnBuildNamedContext(t *testing.T, sb integration.Sandbox) {
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterOCI,
-				Output: fixedWriteCloser(nopWriteCloser{outW}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: outW}),
 			},
 		},
 	}, nil)
@@ -8220,7 +8242,7 @@ func testNamedOCILayoutContext(t *testing.T, sb integration.Sandbox) {
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterOCI,
-				Output: fixedWriteCloser(nopWriteCloser{outW}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: outW}),
 			},
 		},
 	}, nil)
@@ -8370,7 +8392,7 @@ ENV foo=bar
 		},
 		Exports: []client.ExportEntry{{
 			Type:   client.ExporterOCI,
-			Output: fixedWriteCloser(nopWriteCloser{outW}),
+			Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: outW}),
 		}},
 	}, nil)
 	require.NoError(t, err)
@@ -8425,7 +8447,7 @@ FROM nonexistent AS base
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterOCI,
-				Output: fixedWriteCloser(nopWriteCloser{outW}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: outW}),
 			},
 		},
 	}, nil)
@@ -8866,7 +8888,7 @@ COPY Dockerfile .
 	outW, err := os.Create(out)
 	require.NoError(t, err)
 
-	tm := time.Date(2015, time.October, 21, 7, 28, 0, 0, time.UTC)
+	tm := time.Unix(1700000001, 0).UTC()
 
 	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
 		FrontendAttrs: map[string]string{
@@ -8911,6 +8933,207 @@ COPY Dockerfile .
 	for _, h := range img.History {
 		require.Equal(t, tm.Unix(), h.Created.Unix())
 	}
+}
+
+func testSourceDateEpochDockerfileDefault(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureOCIExporter, workers.FeatureSourceDateEpoch)
+	f := getFrontend(t, sb)
+
+	tm := time.Date(2015, time.October, 21, 7, 28, 0, 0, time.UTC)
+	dockerfile := fmt.Appendf(nil, `
+ARG SOURCE_DATE_EPOCH=%d
+FROM scratch
+COPY Dockerfile .
+`, tm.Unix())
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+	out := filepath.Join(destDir, "out.tar")
+	outW, err := os.Create(out)
+	require.NoError(t, err)
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type: client.ExporterOCI,
+				Attrs: map[string]string{
+					"rewrite-timestamp": "true",
+				},
+				Output: fixedWriteCloser(outW),
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(out)
+	require.NoError(t, err)
+
+	mfst := readOCIManifest(t, dt)
+	require.Len(t, mfst.Layers, 1)
+	require.Equal(t, fmt.Sprintf("%d", tm.Unix()), mfst.Layers[0].Annotations["buildkit/rewritten-timestamp"])
+}
+
+func testSourceDateEpochDockerfileDefaultOverride(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureOCIExporter, workers.FeatureSourceDateEpoch)
+	f := getFrontend(t, sb)
+
+	defaultTM := time.Unix(1700000001, 0).UTC()
+	overrideTM := time.Unix(1700000002, 0).UTC()
+	dockerfile := fmt.Appendf(nil, `
+ARG SOURCE_DATE_EPOCH=%d
+FROM scratch
+COPY Dockerfile .
+`, defaultTM.Unix())
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+	out := filepath.Join(destDir, "out.tar")
+	outW, err := os.Create(out)
+	require.NoError(t, err)
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"build-arg:SOURCE_DATE_EPOCH": fmt.Sprintf("%d", overrideTM.Unix()),
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type: client.ExporterOCI,
+				Attrs: map[string]string{
+					"rewrite-timestamp": "true",
+				},
+				Output: fixedWriteCloser(outW),
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(out)
+	require.NoError(t, err)
+
+	mfst := readOCIManifest(t, dt)
+	require.Len(t, mfst.Layers, 1)
+	require.Equal(t, fmt.Sprintf("%d", overrideTM.Unix()), mfst.Layers[0].Annotations["buildkit/rewritten-timestamp"])
+}
+
+func testSourceDateEpochDockerfileDefaultReset(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureOCIExporter, workers.FeatureSourceDateEpoch)
+	f := getFrontend(t, sb)
+
+	tm := time.Date(2015, time.October, 21, 7, 28, 0, 0, time.UTC)
+	dockerfile := fmt.Appendf(nil, `
+ARG SOURCE_DATE_EPOCH=%d
+FROM scratch
+COPY Dockerfile .
+`, tm.Unix())
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+	out := filepath.Join(destDir, "out.tar")
+	outW, err := os.Create(out)
+	require.NoError(t, err)
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type: client.ExporterOCI,
+				Attrs: map[string]string{
+					"source-date-epoch": "",
+					"rewrite-timestamp": "true",
+				},
+				Output: fixedWriteCloser(outW),
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(out)
+	require.NoError(t, err)
+
+	mfst := readOCIManifest(t, dt)
+	require.Len(t, mfst.Layers, 1)
+	require.Empty(t, mfst.Layers[0].Annotations["buildkit/rewritten-timestamp"])
+}
+
+func testSourceDateEpochDockerfileDefaultInvalid(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	workers.CheckFeatureCompat(t, sb, workers.FeatureOCIExporter, workers.FeatureSourceDateEpoch)
+	f := getFrontend(t, sb)
+
+	dockerfile := []byte(`
+ARG SOURCE_DATE_EPOCH=not-a-timestamp
+FROM scratch
+COPY Dockerfile .
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+	out := filepath.Join(destDir, "out.tar")
+	outW, err := os.Create(out)
+	require.NoError(t, err)
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type: client.ExporterOCI,
+				Attrs: map[string]string{
+					"source-date-epoch": "",
+				},
+				Output: fixedWriteCloser(outW),
+			},
+		},
+	}, nil)
+	require.ErrorContains(t, err, "invalid SOURCE_DATE_EPOCH: not-a-timestamp")
 }
 
 func testSBOMScannerImage(t *testing.T, sb integration.Sandbox) {
@@ -9324,7 +9547,7 @@ EOF
 		Exports: []client.ExportEntry{
 			{
 				Type:   client.ExporterOCI,
-				Output: fixedWriteCloser(&nopWriteCloser{buf}),
+				Output: fixedWriteCloser(&iohelper.NopWriteCloser{Writer: buf}),
 				Attrs: map[string]string{
 					"name": "org/repo:tag1,org/repo:tag2",
 				},
@@ -10659,12 +10882,6 @@ func getFrontend(t *testing.T, sb integration.Sandbox) frontend {
 	require.True(t, ok)
 	return fn
 }
-
-type nopWriteCloser struct {
-	io.Writer
-}
-
-func (nopWriteCloser) Close() error { return nil }
 
 type secModeSandbox struct{}
 
