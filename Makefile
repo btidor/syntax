@@ -1,4 +1,4 @@
-.PHONY: all check release upstream $(wildcard tests/Dockerfile*)
+.PHONY: all automate check release upstream $(wildcard tests/Dockerfile*)
 
 all:
 	docker build . -t btidor-syntax-dev
@@ -36,3 +36,19 @@ upstream:
 	find dockerfile/ -type f -exec sed -i -e \
 		's#github.com/btidor/syntax/dockerfile/parser#github.com/moby/buildkit/frontend/dockerfile/parser#g' {} \;
 	cd dockerfile && go mod tidy && go fmt ./...
+
+automate:
+	export up=$$(curl "https://api.github.com/repos/moby/buildkit/releases?per_page=100" | \
+		jq -c '[.[] | .tag_name | select((. | startswith("dockerfile/")) and (. | contains("-") | not)) | sub("^dockerfile/"; "")]'); \
+	export dn=$$(curl "https://api.github.com/repos/btidor/syntax/releases?per_page=100" | \
+		jq -c '[.[] | .tag_name | sub("^v"; "")]'); \
+	jq -cnr --argjson up "$$up" --argjson dn "$$dn" '$$up - $$dn | .[]' | \
+	while read -r V; do \
+		git checkout HEAD~3 && \
+		make upstream "V=$$V" && \
+		git add -A && \
+		git commit -m "Pull BuildKit upstream v$$V" && \
+		git cherry-pick main^^ main^ main && \
+		make && make check && \
+		make release "V=$$V"; \
+	done
