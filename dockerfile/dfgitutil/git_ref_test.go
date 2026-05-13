@@ -235,6 +235,36 @@ func TestParseGitRef(t *testing.T) {
 			err: "invalid mtime value",
 		},
 		{
+			ref: "https://github.com/moby/buildkit.git?fetch-by-commit=true&checksum=deadbeef#refs/heads/branch",
+			expected: &GitRef{
+				Remote:        "https://github.com/moby/buildkit.git",
+				ShortName:     "buildkit",
+				Ref:           "refs/heads/branch",
+				Checksum:      "deadbeef",
+				FetchByCommit: true,
+			},
+		},
+		{
+			ref: "https://github.com/moby/buildkit.git?fetch-by-commit&checksum=deadbeef",
+			expected: &GitRef{
+				Remote:        "https://github.com/moby/buildkit.git",
+				ShortName:     "buildkit",
+				Checksum:      "deadbeef",
+				FetchByCommit: true,
+			},
+		},
+		{
+			ref: "https://github.com/moby/buildkit.git?fetch-by-commit=false",
+			expected: &GitRef{
+				Remote:    "https://github.com/moby/buildkit.git",
+				ShortName: "buildkit",
+			},
+		},
+		{
+			ref: "https://github.com/moby/buildkit.git?fetch-by-commit=invalid",
+			err: "invalid fetch-by-commit value",
+		},
+		{
 			ref: "https://github.com/moby/buildkit.git?invalid=123",
 			err: "unexpected query \"invalid\"",
 		},
@@ -420,7 +450,53 @@ func TestFragmentFormat(t *testing.T) {
 	}
 	for i, tt := range cases {
 		t.Run(fmt.Sprintf("case%d", i+1), func(t *testing.T) {
-			got, ok := FragmentFormat(tt.ref)
+			got, ok := FragmentFormat(tt.ref, false)
+			require.Equal(t, tt.expected, got)
+			require.Equal(t, tt.ok, ok)
+		})
+	}
+}
+
+func TestFragmentFormatWithSubdir(t *testing.T) {
+	cases := []struct {
+		ref      string
+		expected string
+		ok       bool
+	}{
+		{
+			ref:      "https://github.com/foo/bar.git#baz/qux:quux/quuz",
+			expected: "https://github.com/foo/bar.git#baz/qux:quux/quuz",
+			ok:       true,
+		},
+		{
+			ref:      "https://github.com/docker/docker.git#:myfolder",
+			expected: "https://github.com/docker/docker.git#:myfolder",
+			ok:       true,
+		},
+		{
+			ref:      "https://github.com/docker/docker.git?ref=v1.0.0&subdir=/subdir",
+			expected: "https://github.com/docker/docker.git#v1.0.0:subdir",
+			ok:       true,
+		},
+		{
+			ref:      "https://github.com/moby/buildkit.git?subdir=/subdir#v1.0.0",
+			expected: "https://github.com/moby/buildkit.git#v1.0.0:subdir",
+			ok:       true,
+		},
+		{
+			ref:      "git@github.com:moby/buildkit.git?subdir=/subdir#v1.0.0",
+			expected: "git@github.com:moby/buildkit.git#v1.0.0:subdir",
+			ok:       true,
+		},
+		{
+			ref:      "https://github.com/moby/buildkit.git",
+			expected: "https://github.com/moby/buildkit.git",
+			ok:       true,
+		},
+	}
+	for i, tt := range cases {
+		t.Run(fmt.Sprintf("case%d", i+1), func(t *testing.T) {
+			got, ok := FragmentFormat(tt.ref, true)
 			require.Equal(t, tt.expected, got)
 			require.Equal(t, tt.ok, ok)
 		})
