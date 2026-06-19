@@ -153,6 +153,7 @@ var allTests = integration.TestFuncs(
 	testShmSize,
 	testUlimit,
 	testCgroupParent,
+	testLinuxResources,
 	testNamedImageContext,
 	testNamedImageContextPlatform,
 	testNamedImageContextTimestamps,
@@ -4356,7 +4357,7 @@ USER nobody
 	require.Equal(t, "nobody", ociimg.Config.User)
 }
 
-// testUserAdditionalGids ensures that that the primary GID is also included in the additional GID list.
+// testUserAdditionalGids ensures that the primary GID is also included in the additional GID list.
 // CVE-2023-25173: https://github.com/advisories/GHSA-hmfx-3pcx-653p
 func testUserAdditionalGids(t *testing.T, sb integration.Sandbox) {
 	integration.SkipOnPlatform(t, "windows", "Tests Unix GID behavior using id command and /etc/passwd, not applicable to Windows")
@@ -4469,6 +4470,8 @@ RUN mkdir -m 0777 /out
 COPY --chmod=0644 foo /
 COPY --chmod=777 bar /baz
 COPY --chmod=0 foo /foobis
+COPY --chmod=777 foo /parent/foo
+COPY --chmod=770 foo /parent/sub/foo
 
 ARG mode
 COPY --chmod=${mode} foo /footer
@@ -4476,6 +4479,8 @@ COPY --chmod=${mode} foo /footer
 RUN stat -c "%04a" /foo  > /out/fooperm
 RUN stat -c "%04a" /baz  > /out/barperm
 RUN stat -c "%04a" /foobis  > /out/foobisperm
+RUN stat -c "%04a" /parent  > /out/parentperm
+RUN stat -c "%04a" /parent/sub  > /out/subparentperm
 RUN stat -c "%04a" /footer  > /out/footerperm
 FROM scratch
 COPY --from=base /out /
@@ -4523,6 +4528,14 @@ COPY --from=base /out /
 	dt, err = os.ReadFile(filepath.Join(destDir, "foobisperm"))
 	require.NoError(t, err)
 	require.Equal(t, "0000\n", string(dt))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "parentperm"))
+	require.NoError(t, err)
+	require.Equal(t, "0777\n", string(dt))
+
+	dt, err = os.ReadFile(filepath.Join(destDir, "subparentperm"))
+	require.NoError(t, err)
+	require.Equal(t, "0770\n", string(dt))
 
 	dt, err = os.ReadFile(filepath.Join(destDir, "footerperm"))
 	require.NoError(t, err)
@@ -4981,16 +4994,30 @@ ADD --chmod=10000 foo /
 	require.ErrorContains(t, err, "invalid chmod parameter: '10000'. it should be octal string and between 0 and 07777")
 }
 
+// testDockerfileFromGitSHA1 runs testDockerfileFromGit against a repo using
+// the SHA-1 object format.
 func testDockerfileFromGitSHA1(t *testing.T, sb integration.Sandbox) {
 	testDockerfileFromGit(t, sb, "sha1")
 }
 
+// testDockerfileFromGitSHA256 runs testDockerfileFromGit against a repo using
+// the SHA-256 object format.
 func testDockerfileFromGitSHA256(t *testing.T, sb integration.Sandbox) {
 	testDockerfileFromGit(t, sb, "sha256")
 }
 
+// testDockerfileFromGit verifies using a Git repo served over HTTP as the
+// build context. It serves a local repo (sha1 or sha256) with two commits and
+// solves twice: once pinned to branch "first" (expects only `bar`) and once
+// on the default branch (expects both `bar` and `bar2`), covering ref
+// resolution and URL-fragment branch selection for both hash formats.
 func testDockerfileFromGit(t *testing.T, sb integration.Sandbox, format string) {
-	integration.SkipOnPlatform(t, "windows")
+	// Skipped on Windows:
+	// BuildKit's Git source handler fails to update submodules on Windows even when
+	// the repo has no submodules. The error "failed to update submodules ... git stderr:"
+	// occurs with empty stderr, indicating the submodule update command cannot execute
+	// properly on Windows.
+	integration.SkipOnPlatform(t, "windows", "Git source handler submodule update not supported on Windows")
 	f := getFrontend(t, sb)
 
 	gitDir := t.TempDir()
@@ -5863,8 +5890,16 @@ COPY --from=mid /out/bar /bar
 	require.Equal(t, expected, string(dt))
 }
 
+// testOnBuildNewDeps verifies that ONBUILD instructions in a base image can
+// introduce new build-graph dependencies (other images, stages, bind-mounts)
+// that the consuming Dockerfile never references directly. It pushes a base
+// with an ONBUILD COPY from an unrelated image, then a second base whose
+// ONBUILD uses `RUN --mount=type=bind,from=inputstage`, and finally consumes
+// both — covering external refs, mount flags, and nested ONBUILD chains.
 func testOnBuildNewDeps(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
+	// ONBUILD plumbing here (`echo -n`, `cat > …`, `mkdir && … && …` chains
+	// and bind-mounts) has no reliable nanoserver equivalent.
+	integration.SkipOnPlatform(t, "windows", "ONBUILD shell plumbing not portable to Windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureDirectPush)
 	f := getFrontend(t, sb)
 
@@ -6081,8 +6116,15 @@ RUN --mount=type=cache,target=C:\cache type C:\cache\foo | findstr "42" && type 
 	require.NoError(t, err)
 }
 
+// testCacheMultiPlatformImportExport checks that the build cache works across
+// multiple platforms at once.
+//
+// It builds the same Dockerfile for two platforms, pushes the result to a
+// registry with an inline cache, and then rebuilds from that cache twice. Each
+// rebuild must produce exactly the same image (same digest and same file
+// contents per platform) as the first build, proving the cache was reused
+// instead of re-running the build steps.
 func testCacheMultiPlatformImportExport(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows", "test builds for linux/amd64 and linux/arm/v7 platforms, uses Linux-specific base image (busybox) and Linux commands (/dev/urandom, sha256sum)")
 	workers.CheckFeatureCompat(t, sb,
 		workers.FeatureDirectPush,
 		workers.FeatureCacheExport,
@@ -6091,20 +6133,40 @@ func testCacheMultiPlatformImportExport(t *testing.T, sb integration.Sandbox) {
 	)
 	f := getFrontend(t, sb)
 
+	// Two-platform matrix per OS. TARGETARCH for linux/arm/v7 is "arm";
+	// for windows/arm64 it is "arm64".
+	platformAttr := integration.UnixOrWindows("linux/amd64,linux/arm/v7", "windows/amd64,windows/arm64")
+	platform1 := integration.UnixOrWindows("linux/amd64", "windows/amd64")
+	platform2 := integration.UnixOrWindows("linux/arm/v7", "windows/arm64")
+	arch2 := integration.UnixOrWindows("arm", "arm64")
+
 	registry, err := sb.NewRegistry()
 	if errors.Is(err, integration.ErrRequirements) {
 		t.Skip(err.Error())
 	}
 	require.NoError(t, err)
 
-	dockerfile := []byte(`
+	// Windows equivalent of the Linux RUN: nanoserver lacks PowerShell, sha256sum,
+	// and /dev/urandom, so use cmd.exe with TARGETARCH+RANDOM+TIME for uniqueness.
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM --platform=$BUILDPLATFORM busybox AS base
 ARG TARGETARCH
 RUN echo -n $TARGETARCH> arch && cat /dev/urandom | head -c 100 | sha256sum > unique
 FROM scratch
 COPY --from=base unique /
 COPY --from=base arch /
-`)
+`,
+		`
+FROM --platform=$BUILDPLATFORM nanoserver AS base
+USER ContainerAdministrator
+ARG TARGETARCH
+RUN ["cmd","/S","/C","echo %TARGETARCH%>C:\\arch & echo %TARGETARCH%-%RANDOM%-%RANDOM%-%RANDOM%-%TIME%-%DATE%>C:\\unique"]
+FROM nanoserver
+COPY --from=base /unique /
+COPY --from=base /arch /
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
@@ -6116,14 +6178,6 @@ COPY --from=base arch /
 	defer c.Close()
 
 	target := registry + "/buildkit/testexportdf:multi"
-
-	// exportCache := []client.CacheOptionsEntry{
-	// 	{
-	// 		Type:  "registry",
-	// 		Attrs: map[string]string{"ref": target},
-	// 	},
-	// }
-	// importCache := target
 
 	exportCache := []client.CacheOptionsEntry{
 		{
@@ -6144,7 +6198,7 @@ COPY --from=base arch /
 		},
 		CacheExports: exportCache,
 		FrontendAttrs: map[string]string{
-			"platform": "linux/amd64,linux/arm/v7",
+			"platform": platformAttr,
 		},
 		LocalMounts: map[string]fsutil.FS{
 			dockerui.DefaultLocalNameDockerfile: dir,
@@ -6161,9 +6215,16 @@ COPY --from=base arch /
 
 	require.Equal(t, 2, len(imgs.Images))
 
-	require.Equal(t, "amd64", string(imgs.Find("linux/amd64").Layers[1]["arch"].Data))
-	dtamd := imgs.Find("linux/amd64").Layers[0]["unique"].Data
-	dtarm := imgs.Find("linux/arm/v7").Layers[0]["unique"].Data
+	// Windows layers: nanoserver adds 1 base OS layer (shifting indices by +1)
+	// and tar entries are nested under "Files/".
+	archLayerIdx := integration.UnixOrWindows(1, 2)
+	uniqueLayerIdx := integration.UnixOrWindows(0, 1)
+	archKey := integration.UnixOrWindows("arch", "Files/arch")
+	uniqueKey := integration.UnixOrWindows("unique", "Files/unique")
+
+	require.Equal(t, "amd64", strings.TrimSpace(string(imgs.Find(platform1).Layers[archLayerIdx][archKey].Data)))
+	dtamd := imgs.Find(platform1).Layers[uniqueLayerIdx][uniqueKey].Data
+	dtarm := imgs.Find(platform2).Layers[uniqueLayerIdx][uniqueKey].Data
 	require.NotEqual(t, dtamd, dtarm)
 
 	for range 2 {
@@ -6172,7 +6233,7 @@ COPY --from=base arch /
 		_, err = f.Solve(sb.Context(), c, client.SolveOpt{
 			FrontendAttrs: map[string]string{
 				"cache-from": importCache,
-				"platform":   "linux/amd64,linux/arm/v7",
+				"platform":   platformAttr,
 			},
 			Exports: []client.ExportEntry{
 				{
@@ -6201,9 +6262,9 @@ COPY --from=base arch /
 
 		require.Equal(t, 2, len(imgs.Images))
 
-		require.Equal(t, "arm", string(imgs.Find("linux/arm/v7").Layers[1]["arch"].Data))
-		dtamd2 := imgs.Find("linux/amd64").Layers[0]["unique"].Data
-		dtarm2 := imgs.Find("linux/arm/v7").Layers[0]["unique"].Data
+		require.Equal(t, arch2, strings.TrimSpace(string(imgs.Find(platform2).Layers[archLayerIdx][archKey].Data)))
+		dtamd2 := imgs.Find(platform1).Layers[uniqueLayerIdx][uniqueKey].Data
+		dtarm2 := imgs.Find(platform2).Layers[uniqueLayerIdx][uniqueKey].Data
 		require.Equal(t, string(dtamd), string(dtamd2))
 		require.Equal(t, string(dtarm), string(dtarm2))
 	}
@@ -7673,6 +7734,57 @@ COPY --from=base /out /
 	require.Contains(t, strings.TrimSpace(string(dt)), `Resource temporarily unavailable`)
 }
 
+func testLinuxResources(t *testing.T, sb integration.Sandbox) {
+	integration.SkipOnPlatform(t, "windows")
+	if sb.Rootless() {
+		t.SkipNow()
+	}
+
+	if _, err := os.Lstat("/sys/fs/cgroup/cgroup.subtree_control"); os.IsNotExist(err) {
+		t.Skipf("test requires cgroup v2")
+	}
+
+	f := getFrontend(t, sb)
+	dockerfile := []byte(`
+FROM alpine AS base
+RUN mkdir /out && cat /sys/fs/cgroup/memory.max > /out/memory
+FROM scratch
+COPY --from=base /out /
+`)
+
+	dir := integration.Tmpdir(
+		t,
+		fstest.CreateFile("Dockerfile", dockerfile, 0600),
+	)
+
+	c, err := client.New(sb.Context(), sb.Address())
+	require.NoError(t, err)
+	defer c.Close()
+
+	destDir := t.TempDir()
+
+	_, err = f.Solve(sb.Context(), c, client.SolveOpt{
+		FrontendAttrs: map[string]string{
+			"memory": "67108864",
+		},
+		LocalMounts: map[string]fsutil.FS{
+			dockerui.DefaultLocalNameDockerfile: dir,
+			dockerui.DefaultLocalNameContext:    dir,
+		},
+		Exports: []client.ExportEntry{
+			{
+				Type:      client.ExporterLocal,
+				OutputDir: destDir,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+
+	dt, err := os.ReadFile(filepath.Join(destDir, "memory"))
+	require.NoError(t, err)
+	require.Equal(t, "67108864", strings.TrimSpace(string(dt)))
+}
+
 func testStepNames(t *testing.T, sb integration.Sandbox) {
 	ctx := sb.Context()
 
@@ -8740,33 +8852,71 @@ COPY --from=build /foo /out /
 	require.Equal(t, expectedFooContent, string(dt))
 }
 
+// testNamedMultiplatformInputContext checks that the output of one
+// multi-platform build can be reused as the base image of a second build,
+// with each platform's result correctly routed to the matching platform in
+// the downstream build. It confirms that per-platform refs and their image
+// config (env vars, etc.) flow through named input contexts without mixing
+// architectures, and that the final multi-platform export contains the
+// expected per-arch artifacts.
 func testNamedMultiplatformInputContext(t *testing.T, sb integration.Sandbox) {
-	integration.SkipOnPlatform(t, "windows")
 	workers.CheckFeatureCompat(t, sb, workers.FeatureMultiPlatform)
 	ctx := sb.Context()
+
+	// Two-platform matrix per OS. The "base" stage is built for both platforms,
+	// then fed back in as a named input context to a second Dockerfile.
+	platformAttr := integration.UnixOrWindows("linux/amd64,linux/arm64", "windows/amd64,windows/arm64")
+	platform1 := integration.UnixOrWindows("linux/amd64", "windows/amd64")
+	platform2 := integration.UnixOrWindows("linux/arm64", "windows/arm64")
+	// Local-export subdirs are named after the platform (slash -> underscore).
+	outDir1 := integration.UnixOrWindows("linux_amd64", "windows_amd64")
+	outDir2 := integration.UnixOrWindows("linux_arm64", "windows_arm64")
 
 	c, err := client.New(ctx, sb.Address())
 	require.NoError(t, err)
 	defer c.Close()
 
-	dockerfile := []byte(`
+	// Windows equivalent of the Linux RUN: nanoserver lacks PowerShell, so use
+	// cmd.exe. ContainerAdministrator is needed to write to C:\.
+	dockerfile := []byte(integration.UnixOrWindows(
+		`
 FROM --platform=$BUILDPLATFORM alpine
 ARG TARGETARCH
 ENV FOO=bar-$TARGETARCH
 RUN echo "foo $TARGETARCH" > /out
-`)
+`,
+		`
+FROM --platform=$BUILDPLATFORM nanoserver
+USER ContainerAdministrator
+ARG TARGETARCH
+ENV FOO=bar-$TARGETARCH
+RUN ["cmd","/S","/C","echo foo %TARGETARCH%> C:\\out"]
+`,
+	))
 
 	dir := integration.Tmpdir(
 		t,
 		fstest.CreateFile("Dockerfile", dockerfile, 0600),
 	)
 
-	dockerfile2 := []byte(`
+	// Second Dockerfile consumes "base" as a named input context (per platform)
+	// produced by the first solve, then exports the artifacts via COPY --from.
+	// On Windows we COPY into a nanoserver final stage (scratch is unsupported).
+	dockerfile2 := []byte(integration.UnixOrWindows(
+		`
 FROM base AS build
 RUN echo "foo is $FOO" > /foo
 FROM scratch
 COPY --from=build /foo /out /
-`)
+`,
+		`
+FROM base AS build
+USER ContainerAdministrator
+RUN ["cmd","/S","/C","echo foo is %FOO%> C:\\foo"]
+FROM nanoserver
+COPY --from=build /foo /out /
+`,
+	))
 
 	dir2 := integration.Tmpdir(
 		t,
@@ -8778,7 +8928,7 @@ COPY --from=build /foo /out /
 	b := func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
 		res, err := f.SolveGateway(ctx, c, gateway.SolveRequest{
 			FrontendOpt: map[string]string{
-				"platform": "linux/amd64,linux/arm64",
+				"platform": platformAttr,
 			},
 		})
 		if err != nil {
@@ -8790,7 +8940,7 @@ COPY --from=build /foo /out /
 		}
 
 		inputs := map[string]*pb.Definition{}
-		st, err := res.Refs["linux/amd64"].ToState()
+		st, err := res.Refs[platform1].ToState()
 		if err != nil {
 			return nil, err
 		}
@@ -8798,9 +8948,9 @@ COPY --from=build /foo /out /
 		if err != nil {
 			return nil, err
 		}
-		inputs["base::linux/amd64"] = def.ToPB()
+		inputs["base::"+platform1] = def.ToPB()
 
-		st, err = res.Refs["linux/arm64"].ToState()
+		st, err = res.Refs[platform2].ToState()
 		if err != nil {
 			return nil, err
 		}
@@ -8808,16 +8958,16 @@ COPY --from=build /foo /out /
 		if err != nil {
 			return nil, err
 		}
-		inputs["base::linux/arm64"] = def.ToPB()
+		inputs["base::"+platform2] = def.ToPB()
 
 		frontendOpt := map[string]string{
-			"dockerfilekey":             dockerui.DefaultLocalNameDockerfile + "2",
-			"context:base::linux/amd64": "input:base::linux/amd64",
-			"context:base::linux/arm64": "input:base::linux/arm64",
-			"platform":                  "linux/amd64,linux/arm64",
+			"dockerfilekey":              dockerui.DefaultLocalNameDockerfile + "2",
+			"context:base::" + platform1: "input:base::" + platform1,
+			"context:base::" + platform2: "input:base::" + platform2,
+			"platform":                   platformAttr,
 		}
 
-		dt, ok := res.Metadata["containerimage.config/linux/amd64"]
+		dt, ok := res.Metadata["containerimage.config/"+platform1]
 		if !ok {
 			return nil, errors.Errorf("no containerimage.config in metadata")
 		}
@@ -8827,9 +8977,9 @@ COPY --from=build /foo /out /
 		if err != nil {
 			return nil, err
 		}
-		frontendOpt["input-metadata:base::linux/amd64"] = string(dt)
+		frontendOpt["input-metadata:base::"+platform1] = string(dt)
 
-		dt, ok = res.Metadata["containerimage.config/linux/arm64"]
+		dt, ok = res.Metadata["containerimage.config/"+platform2]
 		if !ok {
 			return nil, errors.Errorf("no containerimage.config in metadata")
 		}
@@ -8839,7 +8989,7 @@ COPY --from=build /foo /out /
 		if err != nil {
 			return nil, err
 		}
-		frontendOpt["input-metadata:base::linux/arm64"] = string(dt)
+		frontendOpt["input-metadata:base::"+platform2] = string(dt)
 
 		res, err = f.SolveGateway(ctx, c, gateway.SolveRequest{
 			FrontendOpt:    frontendOpt,
@@ -8870,21 +9020,23 @@ COPY --from=build /foo /out /
 	}, product, b, nil)
 	require.NoError(t, err)
 
-	dt, err := os.ReadFile(filepath.Join(destDir, "linux_amd64/out"))
+	// cmd.exe's `echo` writes CRLF and preserves the space before `>`, so
+	// TrimSpace is used to normalize the output on Windows.
+	dt, err := os.ReadFile(filepath.Join(destDir, outDir1+"/out"))
 	require.NoError(t, err)
-	require.Equal(t, "foo amd64\n", string(dt))
+	require.Equal(t, "foo amd64", strings.TrimSpace(string(dt)))
 
-	dt, err = os.ReadFile(filepath.Join(destDir, "linux_amd64/foo"))
+	dt, err = os.ReadFile(filepath.Join(destDir, outDir1+"/foo"))
 	require.NoError(t, err)
-	require.Equal(t, "foo is bar-amd64\n", string(dt))
+	require.Equal(t, "foo is bar-amd64", strings.TrimSpace(string(dt)))
 
-	dt, err = os.ReadFile(filepath.Join(destDir, "linux_arm64/out"))
+	dt, err = os.ReadFile(filepath.Join(destDir, outDir2+"/out"))
 	require.NoError(t, err)
-	require.Equal(t, "foo arm64\n", string(dt))
+	require.Equal(t, "foo arm64", strings.TrimSpace(string(dt)))
 
-	dt, err = os.ReadFile(filepath.Join(destDir, "linux_arm64/foo"))
+	dt, err = os.ReadFile(filepath.Join(destDir, outDir2+"/foo"))
 	require.NoError(t, err)
-	require.Equal(t, "foo is bar-arm64\n", string(dt))
+	require.Equal(t, "foo is bar-arm64", strings.TrimSpace(string(dt)))
 }
 
 func testNamedFilteredContext(t *testing.T, sb integration.Sandbox) {
@@ -8930,21 +9082,37 @@ func testNamedFilteredContext(t *testing.T, sb integration.Sandbox) {
 			})
 
 			eg.Go(func() error {
-				transferred := make(map[string]int64)
-				re := regexp.MustCompile(`transferring (.+):`)
+				type transferStatus struct {
+					name        string
+					transferred int64
+				}
+				transfers := make(map[digest.Digest]transferStatus)
 				for ss := range ch {
+					for _, v := range ss.Vertexes {
+						transfer := transfers[v.Digest]
+						transfer.name = v.Name
+						transfers[v.Digest] = transfer
+					}
 					for _, status := range ss.Statuses {
-						m := re.FindStringSubmatch(status.ID)
-						if m == nil {
+						if status.Name != "transferring" {
 							continue
 						}
 
-						ctxName := m[1]
-						transferred[ctxName] = status.Current
+						transfer := transfers[status.Vertex]
+						if status.Current > transfer.transferred {
+							transfer.transferred = status.Current
+							transfers[status.Vertex] = transfer
+						}
 					}
 				}
 
-				if foo := transferred["foo"]; foo < min {
+				var foo int64
+				for _, transfer := range transfers {
+					if transfer.name == "[context foo] load from client" && transfer.transferred > foo {
+						foo = transfer.transferred
+					}
+				}
+				if foo < min {
 					return errors.Errorf("not enough data was transferred, %d < %d", foo, min)
 				} else if foo > max {
 					return errors.Errorf("too much data was transferred, %d > %d", foo, max)
@@ -9794,7 +9962,7 @@ COPY <<-"EOF" /scan.sh
 	set -e
 	cat <<BUNDLE > $BUILDKIT_SCAN_DESTINATION/spdx.json
 	{
-	  "_type": "https://in-toto.io/Statement/v0.1",
+	  "_type": "https://in-toto.io/Statement/v1",
 	  "predicateType": "https://spdx.dev/Document",
 	  "predicate": {"name": "sbom-scan"}
 	}
@@ -9871,7 +10039,7 @@ EOF
 	require.Equal(t, 1, len(att.LayersRaw))
 	var attest intoto.Statement
 	require.NoError(t, json.Unmarshal(att.LayersRaw[0], &attest))
-	require.Equal(t, "https://in-toto.io/Statement/v0.1", attest.Type)
+	require.Equal(t, intoto.StatementInTotoV1, attest.Type)
 	require.Equal(t, intoto.PredicateSPDX, attest.PredicateType)
 	require.Subset(t, attest.Predicate, map[string]any{"name": "sbom-scan"})
 }
@@ -9899,7 +10067,7 @@ COPY <<-"EOF" /scan.sh
 	set -e
 	cat <<BUNDLE > $BUILDKIT_SCAN_DESTINATION/spdx.json
 	{
-	  "_type": "https://in-toto.io/Statement/v0.1",
+	  "_type": "https://in-toto.io/Statement/v1",
 	  "predicateType": "https://spdx.dev/Document",
 	  "predicate": {"name": "core"}
 	}
@@ -9908,7 +10076,7 @@ COPY <<-"EOF" /scan.sh
 		for src in "${BUILDKIT_SCAN_SOURCE_EXTRAS}"/*; do
 			cat <<BUNDLE > $BUILDKIT_SCAN_DESTINATION/$(basename $src).spdx.json
 			{
-			  "_type": "https://in-toto.io/Statement/v0.1",
+			  "_type": "https://in-toto.io/Statement/v1",
 			  "predicateType": "https://spdx.dev/Document",
 			  "predicate": {"name": "extra"}
 			}
