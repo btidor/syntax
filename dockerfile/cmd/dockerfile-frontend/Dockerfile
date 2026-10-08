@@ -32,8 +32,7 @@ RUN --mount=target=. <<EOT
   fi
   BUILTIN_VERSION=$(sed -n 's/^const version = "\(.*\)"$/\1/p' ./frontend/dockerfile/version/version.go)
   case "$BUILTIN_VERSION" in
-    *.*.*) EXPECTED_VERSION="$BUILTIN_VERSION" ;;
-    *.*) EXPECTED_VERSION="$BUILTIN_VERSION.0" ;;
+    *.*) ;;
     *)
       echo "invalid frontend/dockerfile/version/version.go version: $BUILTIN_VERSION"
       exit 1
@@ -43,7 +42,11 @@ RUN --mount=target=. <<EOT
     dockerfile/*)
       ACTUAL_VERSION=${EXACT_TAG#dockerfile/}
       ACTUAL_VERSION=${ACTUAL_VERSION%%-*}
-      if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+      case "$BUILTIN_VERSION" in
+        *.*.*) ;;
+        *.*) ACTUAL_VERSION=${ACTUAL_VERSION%.*} ;;
+      esac
+      if [ "$ACTUAL_VERSION" != "$BUILTIN_VERSION" ]; then
         echo "frontend/dockerfile/version/version.go version $BUILTIN_VERSION does not match external frontend version $EXACT_TAG"
         exit 1
       fi

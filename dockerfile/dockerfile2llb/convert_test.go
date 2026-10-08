@@ -114,6 +114,45 @@ RUN ls -l
 	require.NoError(t, err)
 }
 
+func TestRunCustomNameKeepsEscapes(t *testing.T) {
+	t.Parallel()
+	df := `FROM scratch
+ENV FOO=bar
+RUN echo C:\hello\world\path
+RUN echo "C:\hello\quoted\path"
+RUN echo \$FOO $FOO "a\"b"
+RUN ["echo", "C:\\exec\\path"]
+`
+	assert.ElementsMatch(t, []string{
+		`[1/4] RUN echo C:\hello\world\path`,
+		`[2/4] RUN echo "C:\hello\quoted\path"`,
+		`[3/4] RUN echo \$FOO bar "a\"b"`,
+		`[4/4] RUN ["echo", "C:\\exec\\path"]`,
+	}, customNames(t, df))
+
+	df = "# escape=`\nFROM scratch\nENV FOO=bar\nRUN echo C:\\hello `$FOO $FOO\n"
+	assert.ElementsMatch(t, []string{
+		"[1/1] RUN echo C:\\hello `$FOO bar",
+	}, customNames(t, df))
+}
+
+func customNames(t *testing.T, df string) []string {
+	t.Helper()
+	res, err := Dockerfile2LLB(appcontext.Context(), []byte(df), ConvertOpt{})
+	require.NoError(t, err)
+
+	def, err := res.State.Marshal(t.Context())
+	require.NoError(t, err)
+
+	var names []string
+	for _, md := range def.Metadata {
+		if name, ok := md.Description["llb.customname"]; ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func TestCopyFromKeepsStageLabels(t *testing.T) {
 	t.Parallel()
 
@@ -467,4 +506,42 @@ func TestSourceStateFromSourceOpWrappedCopy(t *testing.T) {
 	require.NotNil(t, rewrittenSourceOp)
 	assert.Equal(t, sourceOp.Identifier, rewrittenSourceOp.Identifier)
 	assert.Equal(t, sourceOp.Attrs, rewrittenSourceOp.Attrs)
+}
+
+func TestCopyLinkChownByName(t *testing.T) {
+	t.Parallel()
+
+	caps := pb.Caps.CapSet(pb.Caps.All())
+
+	for _, tc := range []struct {
+		name    string
+		flags   string
+		mergeOp bool
+		err     string
+	}{
+		{name: "numeric", flags: "--link --chown=1000:1000", mergeOp: true},
+		{name: "root", flags: "--link --chown=root:root", mergeOp: true},
+		{name: "user name", flags: "--link --chown=foo", mergeOp: true, err: "--chown=foo"},
+		{name: "user and group names", flags: "--link --chown=foo:bar", mergeOp: true, err: "--chown=foo:bar"},
+		{name: "group name", flags: "--link --chown=1000:bar", mergeOp: true, err: "--chown=1000:bar"},
+		{name: "user name without merge op", flags: "--link --chown=foo:bar", err: "--chown=foo:bar"},
+		{name: "user name with chmod", flags: "--link --chmod=644 --chown=foo:bar", mergeOp: true, err: "--chown=foo:bar"},
+		{name: "user name without link", flags: "--chown=foo:bar", mergeOp: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			df := "FROM scratch\nCOPY " + tc.flags + " a /b\n"
+			opt := ConvertOpt{}
+			if tc.mergeOp {
+				opt.LLBCaps = &caps
+			}
+			_, err := Dockerfile2LLB(appcontext.Context(), []byte(df), opt)
+			if tc.err == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.err)
+			require.ErrorContains(t, err, "--link")
+		})
+	}
 }
