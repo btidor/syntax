@@ -3,7 +3,6 @@ package dockerfile
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/containerd/continuity/fs/fstest"
@@ -108,10 +107,6 @@ FROM second
 	c, err := client.New(sb.Context(), sb.Address())
 	require.NoError(t, err)
 	defer c.Close()
-
-	destDir, err := os.MkdirTemp("", "buildkit")
-	require.NoError(t, err)
-	defer os.RemoveAll(destDir)
 
 	called := false
 	frontend := func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
@@ -234,11 +229,11 @@ FROM nanoserver AS first
 RUN --mount=type=secret,target=/etc/passwd,required=true --mount=type=ssh exit 0
 
 FROM nanoserver AS second
-RUN --mount=type=secret,id=unused --mount=type=ssh,id=ssh2 exit 0
+RUN --mount=type=secret,id=unused,target=C:/unused --mount=type=ssh,id=ssh2 exit 0
 
 FROM nanoserver AS third
 ARG BAR
-RUN --mount=type=secret,id=second${BAR} exit 0
+RUN --mount=type=secret,id=second${BAR},target=C:/second exit 0
 
 FROM third AS target
 COPY --from=first /License.txt /
@@ -256,10 +251,6 @@ FROM second
 	c, err := client.New(sb.Context(), sb.Address())
 	require.NoError(t, err)
 	defer c.Close()
-
-	destDir, err := os.MkdirTemp("", "buildkit")
-	require.NoError(t, err)
-	defer os.RemoveAll(destDir)
 
 	called := false
 	frontend := func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
@@ -351,10 +342,6 @@ ARG INFOO=${INFOO}456${INBAR}
 	c, err := client.New(sb.Context(), sb.Address())
 	require.NoError(t, err)
 	defer c.Close()
-
-	destDir, err := os.MkdirTemp("", "buildkit")
-	require.NoError(t, err)
-	defer os.RemoveAll(destDir)
 
 	called := false
 	frontend := func(ctx context.Context, c gateway.Client) (*gateway.Result, error) {
@@ -465,7 +452,7 @@ COPY Dockerfile Dockerfile
 func unmarshalOutline(res *gateway.Result) (*outline.Outline, error) {
 	dt, ok := res.Metadata["result.json"]
 	if !ok {
-		return nil, errors.Errorf("missing frontend.outline")
+		return nil, errors.New("missing frontend.outline")
 	}
 	var o outline.Outline
 	if err := json.Unmarshal(dt, &o); err != nil {

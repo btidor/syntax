@@ -178,7 +178,7 @@ RUN dir C:\Windows
 	cmd := sb.Cmd(args + " --output type=image,push=true,name=" + target)
 	require.NoError(t, cmd.Run())
 
-	desc, provider, err := contentutil.ProviderFromRef(target)
+	desc, provider, err := contentutil.ProviderFromRef(sb.Context(), target)
 	require.NoError(t, err)
 
 	imgs, err := testutil.ReadImages(sb.Context(), provider, desc)
@@ -314,7 +314,7 @@ COPY notexist /foo
 			_, err := digest.Parse(ve.Digest)
 			require.NoError(t, err)
 		} else {
-			t.Fatalf("did not find vertex error")
+			t.Fatal("did not find vertex error")
 		}
 
 		// source points to Dockerfile
