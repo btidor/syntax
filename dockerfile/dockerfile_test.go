@@ -192,6 +192,7 @@ var allTests = integration.TestFuncs(
 	testOnBuildInheritedStageWithFrom,
 	testOnBuildNewDeps,
 	testOnBuildWithCacheMount,
+	testOnBuildDisabled,
 
 	// dockerfile_platform_test.go
 	testPlatformArgsImplicit,
@@ -221,6 +222,7 @@ var allTests = integration.TestFuncs(
 	testFrontendDeduplicateSources,
 	testDuplicateLayersProvenance,
 	testProvenanceExportLocal,
+	testProvenanceMultipleExporters,
 	testProvenanceExportLocalForceSplit,
 	testProvenanceExportLocalMultiPlatform,
 	testProvenanceExportLocalMultiPlatformNoSplit,
