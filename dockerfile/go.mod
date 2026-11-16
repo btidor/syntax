@@ -1,6 +1,6 @@
 module github.com/btidor/syntax/dockerfile
 
-go 1.26.8
+go 1.27
 
 require (
 	github.com/containerd/containerd/v2 v2.4.2
